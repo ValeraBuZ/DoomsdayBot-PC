@@ -16,6 +16,8 @@ LEGACY_WORK_DIR = PROJECT_ROOT / "build" / "DoomsdayBotPortable.generated"
 DIST_ROOT = PROJECT_ROOT / "dist"
 DIST_DIR = DIST_ROOT / APP_NAME
 ARCHIVE_PATH = DIST_ROOT / f"{APP_NAME}.zip"
+CONFIG_PATH = PROJECT_ROOT / "config.json"
+EXAMPLE_CONFIG_PATH = PROJECT_ROOT / "config.example.json"
 MANUAL_PATH = PROJECT_ROOT / "DoomsdayBot_Инструкция.pdf"
 
 
@@ -114,6 +116,7 @@ def run_pyinstaller():
 def finalize_portable_layout():
     (STAGE_DIR / "img").mkdir(parents=True, exist_ok=True)
     (STAGE_DIR / "backups" / "config").mkdir(parents=True, exist_ok=True)
+    stage_runtime_config()
     preserve_runtime_data()
     if MANUAL_PATH.exists():
         shutil.copy2(MANUAL_PATH, STAGE_DIR / MANUAL_PATH.name)
@@ -135,6 +138,12 @@ def finalize_portable_layout():
         root_dir=DIST_ROOT,
         base_dir=APP_NAME,
     )
+
+
+def stage_runtime_config():
+    source = CONFIG_PATH if CONFIG_PATH.exists() else EXAMPLE_CONFIG_PATH
+    if source.exists():
+        shutil.copy2(source, STAGE_DIR / "config.json")
 
 
 def preserve_runtime_data():
