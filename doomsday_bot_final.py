@@ -719,14 +719,19 @@ class AutoClicker:
             f"{profile.width}x{profile.height} | \u043f\u043e\u0434\u0433\u043e\u043d\u043a\u0430 {profile.percent_label} | {state}"
         )
 
-    def check_runtime_environment(self, notify=True):
+    def check_runtime_environment(self, notify=True, wait_seconds=0.0):
         self.environment_ready = False
         self.player_index = None
         self.player_name = ""
         if not self.uses_adb:
             self.input_backend = "adb"
             self._refresh_adb_client()
-        if not self.check_adb_connection(notify=False):
+        deadline = time.monotonic() + max(0.0, float(wait_seconds))
+        connected = self.check_adb_connection(notify=False)
+        while not connected and time.monotonic() < deadline:
+            time.sleep(min(2.0, max(0.1, deadline - time.monotonic())))
+            connected = self.check_adb_connection(notify=False)
+        if not connected:
             if notify:
                 self._show_notification('error', 'adb_required', serial=self.adb_serial)
             return False
@@ -853,9 +858,10 @@ class AutoClicker:
             message = self.tr(key, serial=self.adb_serial)
         else:
             target = self.get_adb_repair_target()
-            _ldconsole, instances = self._ldplayer_instances()
+            ldconsole, instances = self._ldplayer_instances()
             running = [item for item in instances if item.running]
-            if target:
+            adb_enabled = adb_debug_enabled(ldconsole, target.index) if ldconsole and target else None
+            if target and adb_enabled is False:
                 key = 'adb_disabled'
                 message = self.tr(key, index=target.index)
             elif len(running) > 1:
@@ -2221,7 +2227,7 @@ class AutoClicker:
     def start(self):
         if not self.stop_event.is_set():
             return True
-        if self.uses_adb and not self.check_runtime_environment(notify=False):
+        if self.uses_adb and not self.check_runtime_environment(notify=False, wait_seconds=8.0):
             self.set_status_message(self.tr('adb_required', serial=self.adb_serial), force=True)
             self._show_notification('error', 'adb_required', serial=self.adb_serial)
             return False

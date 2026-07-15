@@ -437,7 +437,7 @@ def build_compact_ui(root, bot):
         check_button.configure(state=tk.DISABLED)
 
         def worker():
-            ok = bot.check_runtime_environment(notify=False)
+            ok = bot.check_runtime_environment(notify=False, wait_seconds=45.0)
             summary = bot.get_environment_summary()
 
             def finish():
