@@ -1037,6 +1037,9 @@ def build_profile(destination):
                 if step_id.startswith("task_"):
                     configured_image["skip_if_uid_visible"] = card_guard_uid
                     configured_image["prevents_idle_completion"] = True
+                    # Radar markers vary slightly between accounts and map positions.
+                    # Keep color matching strict, but accept a small ORB keypoint set.
+                    configured_image["orb_match_threshold"] = 3
                 if step_id == "wait_in_progress":
                     configured_image["action"] = "wait"
                     configured_image["delay"] = 1.0
