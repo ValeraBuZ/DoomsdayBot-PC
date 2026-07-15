@@ -1,0 +1,69 @@
+name: Portable Windows build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Получить исходники
+        uses: actions/checkout@v4
+
+      - name: Установить Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Установить зависимости
+        run: python -m pip install -r requirements.txt
+
+      - name: Запустить тесты
+        run: python -m unittest discover -s tests -v
+
+      - name: Собрать portable-версию
+        shell: pwsh
+        run: |
+          Copy-Item config.example.json config.json
+          python build_portable.py
+          python tools/install_training_profile.py `
+            --profile profiles/Doomsday_PC_1280x720.zip `
+            --install-root dist/DoomsdayBotPortable
+          Remove-Item dist/DoomsdayBotPortable.zip -Force
+          Compress-Archive `
+            -Path dist/DoomsdayBotPortable `
+            -DestinationPath dist/DoomsdayBotPortable.zip `
+            -CompressionLevel Optimal
+
+      - name: Сохранить ZIP сборки
+        uses: actions/upload-artifact@v4
+        with:
+          name: DoomsdayBotPortable
+          path: dist/DoomsdayBotPortable.zip
+          if-no-files-found: error
+
+      - name: Обновить релиз latest
+        if: github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f latest
+          git push origin latest --force
+          gh release view latest *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload latest dist/DoomsdayBotPortable.zip --clobber
+            gh release edit latest --title "Последняя portable-сборка" --notes "Автоматическая сборка из ветки main."
+          } else {
+            gh release create latest dist/DoomsdayBotPortable.zip --title "Последняя portable-сборка" --notes "Автоматическая сборка из ветки main."
+          }

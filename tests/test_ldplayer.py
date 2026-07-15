@@ -1,0 +1,45 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from doomsdaybot.ldplayer import (
+    adb_debug_enabled,
+    enable_adb_debug,
+    index_from_serial,
+    parse_list2,
+    serial_for_index,
+)
+
+
+class LDPlayerTests(unittest.TestCase):
+    def test_list2_parses_running_instance_and_serial(self):
+        instances = parse_list2("3,zZuB3,10,20,1,21240,10412,1280,720,240\n")
+        self.assertEqual(len(instances), 1)
+        self.assertTrue(instances[0].running)
+        self.assertEqual(instances[0].adb_serial, "emulator-5560")
+        self.assertEqual(serial_for_index(5), "emulator-5564")
+        self.assertEqual(index_from_serial("emulator-5560"), 3)
+
+    def test_enabling_adb_creates_backup_and_updates_config(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            ldconsole = root / "ldconsole.exe"
+            ldconsole.write_bytes(b"")
+            config_dir = root / "vms" / "config"
+            config_dir.mkdir(parents=True)
+            config_path = config_dir / "leidian3.config"
+            config_path.write_text(
+                json.dumps({"basicSettings.adbDebug": 0, "advancedSettings.resolution": {"width": 1280}}),
+                encoding="utf-8",
+            )
+
+            self.assertFalse(adb_debug_enabled(ldconsole, 3))
+            self.assertTrue(enable_adb_debug(ldconsole, 3))
+            self.assertTrue(adb_debug_enabled(ldconsole, 3))
+            self.assertTrue(config_path.with_suffix(".config.doomsdaybot.bak").is_file())
+            self.assertFalse(enable_adb_debug(ldconsole, 3))
+
+
+if __name__ == "__main__":
+    unittest.main()
