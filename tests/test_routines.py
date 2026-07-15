@@ -28,6 +28,7 @@ class RoutineTaskTests(unittest.TestCase):
                 "alliance_donations",
                 "radar",
                 "alliance_help",
+                "fence_survivors",
                 "mail_rewards",
                 "completed_tasks",
                 "research",
@@ -49,6 +50,7 @@ class RoutineTaskTests(unittest.TestCase):
         by_id = {task["id"]: task for task in tasks}
         self.assertEqual(by_id["mail_rewards"]["completion_runtime_step"], "claim_reports")
         self.assertEqual(by_id["completed_tasks"]["completion_runtime_step"], "scroll_top_4")
+        self.assertEqual(by_id["fence_survivors"]["interval_minutes"], 15.0)
 
     def test_resources_are_individually_selectable(self):
         tasks = default_routine_tasks()

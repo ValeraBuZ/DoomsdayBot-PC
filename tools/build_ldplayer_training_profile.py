@@ -126,6 +126,16 @@ DAILY_TASK_STEPS = {
             False,
         ),
     ),
+    "fence_survivors": (
+        (
+            "collect_question",
+            "Собрать награду выжившего у забора",
+            "home_promos_collapsed.png",
+            (1163, 518, 1229, 592),
+            (0, 0),
+            False,
+        ),
+    ),
     "mail_rewards": (
         (
             "open_mail",
@@ -1043,6 +1053,11 @@ def build_profile(destination):
                 if step_id == "wait_in_progress":
                     configured_image["action"] = "wait"
                     configured_image["delay"] = 1.0
+            if task_id == "fence_survivors":
+                configured_image["allow_repeat"] = True
+                configured_image["block_seconds"] = 2.0
+                configured_image["confidence"] = 0.80
+                configured_image["orb_match_threshold"] = 3
             if task_id == "mail_rewards":
                 mail_sequence = (
                     "open_mail",
