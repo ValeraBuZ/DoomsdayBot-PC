@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 import uuid
 
 
@@ -15,6 +16,53 @@ RESOURCE_STEP_IDS = (
     "create_squad",
     "march",
 )
+RADAR_STEP_PRIORITIES = {
+    "radar_screen_guard": 1,
+    "card_guard": 1,
+    "forward_guard": 1,
+    "collect_completed": 3,
+    "wait_in_progress": 5,
+    "open_any_task": 10,
+    "open_supply": 10,
+    "open_car": 10,
+    "open_zombie": 10,
+    "collect_supply": 20,
+    "attack_zombie": 20,
+    "rescue_survivors": 20,
+    "transport_supplies": 21,
+    "confirm_transport": 22,
+    "create_squad": 30,
+    "march": 40,
+    "return_shelter": 50,
+    "task_person_gold_reward": 57,
+    "task_car_generic_shape": 58,
+    "task_person_generic_shape": 59,
+    "task_special_generic_shape": 61,
+    "task_supply_reward_final": 62,
+    "task_car_unstarted_final": 63,
+    "task_special_reward_followup": 64,
+    "task_car_reward_followup": 65,
+    "task_person_unstarted_followup": 66,
+    "task_supply_unstarted_followup": 67,
+    "task_car_unstarted_live": 70,
+    "task_special_unstarted_live": 71,
+    "task_skull_unstarted_live": 72,
+    "task_survivor_current_live": 73,
+    "task_skull_reward_current": 74,
+    "task_skull_reward": 75,
+    "task_car_reward": 76,
+    "task_supply_ready": 77,
+    "task_car_ready": 78,
+    "task_zombie_ready": 79,
+    "task_supply": 80,
+    "task_car": 81,
+    "task_zombie": 82,
+    "task_car_current": 83,
+    "task_skull_current": 84,
+    "task_special_current": 85,
+    "task_fist_current": 86,
+    "open_radar": 90,
+}
 
 
 DEFAULT_ROUTINE_TASKS = (
@@ -30,6 +78,36 @@ DEFAULT_ROUTINE_TASKS = (
         "timeout_seconds": 8.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
+        "settings": {},
+    },
+    {
+        "id": "mail_rewards",
+        "name": "Награды почты",
+        "group": "Награды почты",
+        "category": "daily",
+        "enabled": False,
+        "uses_march": False,
+        "priority": 15,
+        "interval_minutes": 30.0,
+        "timeout_seconds": 10.0,
+        "march_duration_minutes": 30.0,
+        "completion_uid": "",
+        "completion_runtime_step": "claim_reports",
+        "settings": {},
+    },
+    {
+        "id": "completed_tasks",
+        "name": "Выполненные задания",
+        "group": "Выполненные задания",
+        "category": "daily",
+        "enabled": False,
+        "uses_march": False,
+        "priority": 18,
+        "interval_minutes": 30.0,
+        "timeout_seconds": 10.0,
+        "march_duration_minutes": 30.0,
+        "completion_uid": "",
+        "completion_runtime_step": "scroll_top_4",
         "settings": {},
     },
     {
@@ -73,12 +151,18 @@ DEFAULT_ROUTINE_TASKS = (
         "enabled": False,
         "uses_march": False,
         "priority": 30,
-        "interval_minutes": 15.0,
+        "interval_minutes": 720.0,
         "timeout_seconds": 15.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
+        "complete_when_idle": True,
+        "idle_confirmations": 3,
+        "idle_completion_guard_uid": str(
+            uuid.uuid5(PROFILE_NAMESPACE, "radar:radar_screen_guard")
+        ),
         "settings": {
-            "max_tasks": 10,
+            "max_tasks": 0,
+            "fixed_utc_hours": [0, 12],
         },
     },
     {
@@ -305,7 +389,7 @@ TASK_SETTING_SPECS = {
         {"key": "avoid_gems", "label": "Не тратить алмазы", "kind": "bool"},
     ),
     "radar": (
-        {"key": "max_tasks", "label": "Заданий за цикл", "kind": "int", "min": 1, "max": 50},
+        {"key": "max_tasks", "label": "Лимит заданий (0 = до конца)", "kind": "int", "min": 0, "max": 100},
     ),
     "research": (
         {
@@ -375,6 +459,21 @@ def runtime_step_is_ready(image, completed_steps):
     return all(step in completed for step in required)
 
 
+def image_is_allowed_for_routine(image, task_id):
+    """Return whether a shared system template may run in this routine."""
+    disabled = image.get("disabled_routine_ids", ())
+    if isinstance(disabled, str):
+        disabled = (disabled,)
+    disabled_ids = {str(item) for item in disabled if str(item)}
+    return str(task_id or "") not in disabled_ids
+
+
+def no_action_retry_delay(task):
+    """Use a bounded retry delay when a task timed out without any action."""
+    interval_seconds = float(task.get("interval_minutes", 1.0)) * 60.0
+    return max(30.0, min(300.0, interval_seconds))
+
+
 def upgrade_resource_runtime_metadata(images, tasks):
     """Apply the current resource sequence to both fresh and older profiles."""
     images_by_uid = {str(image.get("uid") or ""): image for image in images}
@@ -403,6 +502,38 @@ def upgrade_resource_runtime_metadata(images, tasks):
     for task in tasks:
         if task.get("id") in RESOURCE_TASK_IDS:
             task["timeout_seconds"] = max(30.0, float(task.get("timeout_seconds", 0.0) or 0.0))
+    return upgraded
+
+
+def upgrade_radar_runtime_metadata(images, tasks):
+    """Prioritize the current radar screen before selecting another map marker."""
+    images_by_uid = {str(image.get("uid") or ""): image for image in images}
+    upgraded = 0
+    for step_id, priority in RADAR_STEP_PRIORITIES.items():
+        uid = str(uuid.uuid5(PROFILE_NAMESPACE, f"radar:{step_id}"))
+        image = images_by_uid.get(uid)
+        if image is None:
+            continue
+        image["routine_priority"] = priority
+        # Radar is complete only after no actionable templates remain. A positive
+        # max_tasks value is retained as a setting for compatibility, not as an
+        # early-completion trigger.
+        if image.get("limit_key") == "max_tasks":
+            image.pop("limit_key", None)
+        if step_id.startswith("task_"):
+            image["prevents_idle_completion"] = True
+        upgraded += 1
+
+    for task in tasks:
+        if task.get("id") == "radar":
+            task["timeout_seconds"] = max(20.0, float(task.get("timeout_seconds", 0.0) or 0.0))
+            task["interval_minutes"] = 720.0
+            task["complete_when_idle"] = True
+            task["idle_confirmations"] = max(3, int(task.get("idle_confirmations", 0) or 0))
+            task["idle_completion_guard_uid"] = str(
+                uuid.uuid5(PROFILE_NAMESPACE, "radar:radar_screen_guard")
+            )
+            task.setdefault("settings", {})["fixed_utc_hours"] = [0, 12]
     return upgraded
 
 
@@ -450,6 +581,30 @@ def _normalize_task(source, default):
             1.0,
         ),
         "completion_uid": str(source.get("completion_uid", "") or ""),
+        "completion_runtime_step": str(
+            source.get(
+                "completion_runtime_step",
+                default.get("completion_runtime_step", ""),
+            )
+            or ""
+        ),
+        "complete_when_idle": bool(
+            source.get("complete_when_idle", default.get("complete_when_idle", False))
+        ),
+        "idle_confirmations": int(
+            _positive_float(
+                source.get("idle_confirmations"),
+                default.get("idle_confirmations", 1),
+                1,
+            )
+        ),
+        "idle_completion_guard_uid": str(
+            source.get(
+                "idle_completion_guard_uid",
+                default.get("idle_completion_guard_uid", ""),
+            )
+            or ""
+        ),
         "settings": _normalize_settings(source.get("settings"), default.get("settings")),
     }
 
@@ -537,5 +692,30 @@ def next_due_task(tasks, next_run, now, active_marches=0, max_marches=5):
 
 
 def next_run_after_finish(task, now):
+    fixed_utc_hours = task.get("settings", {}).get("fixed_utc_hours", ())
+    if fixed_utc_hours:
+        return next_fixed_utc_run(now, fixed_utc_hours)
     interval_seconds = float(task.get("interval_minutes", 1.0)) * 60.0
     return float(now) + max(6.0, interval_seconds)
+
+
+def next_fixed_utc_run(now, hours):
+    """Return the next configured UTC hour, never the current occurrence."""
+    normalized_hours = sorted({int(hour) % 24 for hour in hours})
+    if not normalized_hours:
+        return float(now)
+
+    current = datetime.fromtimestamp(float(now), tz=timezone.utc)
+    for day_offset in (0, 1):
+        day = current.date() + timedelta(days=day_offset)
+        for hour in normalized_hours:
+            candidate = datetime(
+                day.year,
+                day.month,
+                day.day,
+                hour,
+                tzinfo=timezone.utc,
+            )
+            if candidate > current:
+                return candidate.timestamp()
+    raise RuntimeError("Unable to calculate the next fixed UTC run")

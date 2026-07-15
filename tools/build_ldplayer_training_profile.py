@@ -15,7 +15,7 @@ import cv2
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from doomsdaybot.routines import default_routine_tasks
+from doomsdaybot.routines import default_routine_tasks, upgrade_radar_runtime_metadata
 
 
 TRAINING_DIR = PROJECT_ROOT / "build" / "training"
@@ -88,6 +88,14 @@ SYSTEM_STEPS = (
         (0, 0),
         False,
     ),
+    (
+        "limited_trial_forward",
+        "Продолжить ограниченное испытание",
+        "radar_limited_trial_live.png",
+        (398, 62, 882, 110),
+        (-70, 470),
+        False,
+    ),
 )
 
 ACCOUNT_SWITCH_STEPS = (
@@ -115,6 +123,152 @@ DAILY_TASK_STEPS = {
             "base_live_now.png",
             (1208, 495, 1279, 561),
             (0, 0),
+            False,
+        ),
+    ),
+    "mail_rewards": (
+        (
+            "open_mail",
+            "Открыть почту",
+            "home_mail_quests_live.png",
+            (1214, 570, 1268, 626),
+            (0, 0),
+            False,
+        ),
+        (
+            "select_system",
+            "Открыть системные письма",
+            "mail_screen_live.png",
+            (384, 32, 486, 59),
+            (0, 0),
+            True,
+        ),
+        (
+            "claim_system",
+            "Прочитать и получить все системные письма",
+            "mail_screen_live.png",
+            (31, 657, 213, 708),
+            (0, 0),
+            False,
+        ),
+        (
+            "close_rewards",
+            "Закрыть страницу полученных наград",
+            "mail_after_claim_all_live.png",
+            (279, 120, 1001, 184),
+            (0, 439),
+            False,
+        ),
+        (
+            "select_alliance",
+            "Открыть письма альянса",
+            "mail_alliance_tab_live.png",
+            (221, 32, 309, 59),
+            (0, 0),
+            True,
+        ),
+        (
+            "claim_alliance",
+            "Прочитать и получить все письма альянса",
+            "mail_alliance_tab_live.png",
+            (31, 657, 213, 708),
+            (0, 0),
+            False,
+        ),
+        (
+            "select_reports",
+            "Открыть боевые отчёты",
+            "mail_reports_tab_live.png",
+            (61, 32, 132, 59),
+            (0, 0),
+            True,
+        ),
+        (
+            "claim_reports",
+            "Прочитать все боевые отчёты",
+            "mail_reports_tab_live.png",
+            (31, 657, 213, 708),
+            (0, 0),
+            False,
+        ),
+    ),
+    "completed_tasks": (
+        (
+            "open_tasks",
+            "Открыть список заданий",
+            "home_mail_quests_live.png",
+            (14, 521, 84, 570),
+            (0, 0),
+            False,
+        ),
+        (
+            "claim_main",
+            "Получить награду основной миссии",
+            "completed_tasks_screen_live.png",
+            (1026, 356, 1207, 407),
+            (0, 0),
+            False,
+        ),
+        (
+            "select_daily",
+            "Открыть ежедневные миссии",
+            "completed_tasks_screen_live.png",
+            (19, 226, 145, 274),
+            (0, 0),
+            True,
+        ),
+        (
+            "claim_daily",
+            "Получить награду ежедневной миссии",
+            "daily_tasks_screen_live.png",
+            (1026, 374, 1207, 423),
+            (0, 0),
+            False,
+        ),
+        *(
+            (
+                f"scroll_daily_{index}",
+                f"Прокрутить ежедневные миссии ({index}/4)",
+                "daily_tasks_screen_live.png",
+                (19, 226, 145, 274),
+                (0, 0),
+                True,
+            )
+            for index in range(1, 5)
+        ),
+        *(
+            (
+                f"scroll_top_{index}",
+                f"Вернуться к наградам активности ({index}/4)",
+                "daily_tasks_screen_live.png",
+                (19, 226, 145, 274),
+                (0, 0),
+                True,
+            )
+            for index in range(1, 5)
+        ),
+        (
+            "claim_activity_20",
+            "Получить сундук активности 20",
+            "daily_activity_rewards_live.png",
+            (492, 158, 569, 248),
+            (0, 0),
+            False,
+        ),
+        (
+            "claim_activity_40",
+            "Получить сундук активности 40",
+            "daily_activity_rewards_live.png",
+            (650, 158, 727, 248),
+            (0, 0),
+            False,
+        ),
+        (
+            "close_rewards",
+            "Закрыть награды активности",
+            "daily_chest20_after_live.png",
+            (279, 120, 1001, 184),
+            (0, 439),
             False,
         ),
     ),
@@ -236,6 +390,14 @@ DAILY_TASK_STEPS = {
             False,
         ),
         (
+            "radar_screen_guard",
+            "Экран радарной станции открыт",
+            "radar_map_current_live.png",
+            (86, 18, 195, 61),
+            (0, 0),
+            False,
+        ),
+        (
             "task_supply",
             "Выбрать задание со сбросом припасов",
             "radar_after_supply.png",
@@ -252,10 +414,202 @@ DAILY_TASK_STEPS = {
             False,
         ),
         (
+            "task_car_current",
+            "Выбрать текущее автомобильное задание",
+            "radar_map_current_live.png",
+            (762, 440, 830, 520),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_car_unstarted_live",
+            "Выбрать непройденное автомобильное задание",
+            "radar_map_unstarted_followup_live.png",
+            (895, 132, 972, 229),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_special_unstarted_live",
+            "Выбрать непройденное специальное задание",
+            "radar_map_unstarted_followup_live.png",
+            (798, 187, 874, 289),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_special_reward_followup",
+            "Забрать награду специального задания",
+            "radar_special_reward_live.png",
+            (797, 184, 877, 292),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_car_reward_followup",
+            "Забрать награду задания транспортировки",
+            "radar_car_reward_followup_live.png",
+            (894, 129, 976, 232),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_person_unstarted_followup",
+            "Выбрать новое боевое задание",
+            "radar_new_followup_tasks_live.png",
+            (688, 354, 762, 454),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_supply_unstarted_followup",
+            "Выбрать новый сброс припасов",
+            "radar_new_followup_tasks_live.png",
+            (957, 178, 1035, 274),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_supply_reward_final",
+            "Забрать финальную награду сброса припасов",
+            "radar_final_followup_live.png",
+            (970, 331, 1054, 430),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_car_unstarted_final",
+            "Выбрать финальное автомобильное задание",
+            "radar_final_followup_live.png",
+            (957, 177, 1036, 274),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_person_gold_reward",
+            "Забрать золотую награду задания радара",
+            "radar_gold_remaining_live.png",
+            (708, 321, 792, 426),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_car_generic_shape",
+            "Выбрать коричневое автомобильное задание",
+            "radar_generic_shapes_live.png",
+            (894, 132, 974, 233),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_person_generic_shape",
+            "Выбрать красное боевое задание",
+            "radar_generic_shapes_live.png",
+            (713, 326, 787, 426),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_special_generic_shape",
+            "Выбрать фиолетовое специальное задание",
+            "radar_special_generic_live.png",
+            (797, 185, 876, 291),
+            (0, 0),
+            False,
+        ),
+        (
             "task_zombie",
             "Выбрать боевое задание",
             "radar_after_supply.png",
             (608, 346, 674, 430),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_skull_current",
+            "Выбрать текущее боевое задание",
+            "radar_map_after_march_live.png",
+            (707, 320, 789, 415),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_skull_unstarted_live",
+            "Выбрать непройденное боевое задание",
+            "radar_map_remaining_second_live.png",
+            (752, 236, 826, 331),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_survivor_current_live",
+            "Выбрать непройденное задание выживших",
+            "radar_map_remaining_second_live.png",
+            (697, 325, 764, 430),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_skull_reward",
+            "Забрать награду готового боевого задания",
+            "radar_completed_card_live.png",
+            (703, 335, 792, 441),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_skull_reward_current",
+            "Забрать текущую награду боевого задания",
+            "radar_map_remaining_live.png",
+            (655, 328, 747, 440),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_special_current",
+            "Выбрать текущее особое задание",
+            "radar_map_after_march_live.png",
+            (355, 506, 426, 600),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_fist_current",
+            "Выбрать текущее задание схватки",
+            "radar_map_remaining_live.png",
+            (832, 476, 906, 570),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_supply_ready",
+            "Выбрать готовый сброс припасов",
+            "radar_ready_markers_live.png",
+            (576, 145, 646, 231),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_car_ready",
+            "Выбрать готовое автомобильное задание",
+            "radar_ready_markers_live.png",
+            (656, 212, 730, 305),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_car_reward",
+            "Забрать награду автомобильного задания",
+            "radar_map_after_march_live.png",
+            (645, 227, 724, 326),
+            (0, 0),
+            False,
+        ),
+        (
+            "task_zombie_ready",
+            "Выбрать готовое боевое задание",
+            "radar_ready_markers_live.png",
+            (605, 442, 682, 539),
             (0, 0),
             False,
         ),
@@ -265,6 +619,14 @@ DAILY_TASK_STEPS = {
             "radar_task_supply.png",
             (68, 151, 425, 197),
             (-2, 447),
+            False,
+        ),
+        (
+            "open_any_task",
+            "Перейти к открытому заданию радара",
+            "radar_task_supply.png",
+            (112, 597, 375, 645),
+            (0, 0),
             False,
         ),
         (
@@ -284,6 +646,38 @@ DAILY_TASK_STEPS = {
             False,
         ),
         (
+            "card_guard",
+            "Карточка задания радара открыта",
+            "radar_task_supply.png",
+            (78, 410, 280, 454),
+            (0, 0),
+            False,
+        ),
+        (
+            "forward_guard",
+            "Кнопка ВПЕРЕД в карточке радара",
+            "radar_task_supply.png",
+            (112, 597, 375, 645),
+            (0, 0),
+            False,
+        ),
+        (
+            "wait_in_progress",
+            "Ожидать завершения задания радара",
+            "radar_wait_running_live.png",
+            (136, 597, 263, 635),
+            (0, 0),
+            False,
+        ),
+        (
+            "collect_completed",
+            "Получить награду выполненного задания радара",
+            "radar_completed_card_live.png",
+            (112, 596, 377, 646),
+            (0, 0),
+            False,
+        ),
+        (
             "collect_supply",
             "Собрать сброшенные припасы",
             "radar_supply_go.png",
@@ -300,18 +694,42 @@ DAILY_TASK_STEPS = {
             False,
         ),
         (
+            "rescue_survivors",
+            "Спасти выживших по заданию радара",
+            "radar_rescue_survivors_live.png",
+            (855, 495, 1081, 543),
+            (0, 0),
+            False,
+        ),
+        (
+            "transport_supplies",
+            "Транспортировать припасы по заданию радара",
+            "radar_transport_panel_live.png",
+            (855, 544, 1080, 594),
+            (0, 0),
+            False,
+        ),
+        (
+            "confirm_transport",
+            "Подтвердить транспортировку припасов",
+            "radar_transport_confirm_live.png",
+            (443, 174, 832, 211),
+            (152, 314),
+            False,
+        ),
+        (
             "create_squad",
             "Создать отряд для задания радара",
-            "radar_zombie_attack.png",
-            (880, 187, 1061, 268),
+            "radar_create_squad_current_live.png",
+            (880, 221, 1061, 269),
             (0, 0),
             False,
         ),
         (
             "march",
             "Отправить отряд на задание радара",
-            "radar_create_squad.png",
-            (838, 618, 1063, 667),
+            "radar_squad_screen_live.png",
+            (838, 618, 1064, 667),
             (0, 0),
             False,
         ),
@@ -525,6 +943,8 @@ def build_profile(destination):
         system_image = image_config(uid, entry_name, SYSTEM_GROUP, description, offset, grayscale, 0.8)
         system_image["allow_repeat"] = True
         system_image["block_seconds"] = 3.0
+        if step_id == "glory_league_close":
+            system_image["disabled_routine_ids"] = ["radar", "mail_rewards", "completed_tasks"]
         manifest["images"].append(system_image)
         payloads.append((output_path, entry_name))
         print(f"system {step_id:15s} score={score:.3f} size={crop.shape[1]}x{crop.shape[0]}")
@@ -605,8 +1025,127 @@ def build_profile(destination):
                 configured_image["allow_repeat"] = True
                 configured_image["block_seconds"] = 2.0
                 configured_image["confidence"] = 0.82
-                if step_id in {"open_car", "collect_supply", "march"}:
-                    configured_image["limit_key"] = "max_tasks"
+                configured_image["orb_match_threshold"] = 5
+                card_guard_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "radar:card_guard"))
+                forward_guard_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "radar:forward_guard"))
+                if step_id in {"radar_screen_guard", "card_guard", "forward_guard"}:
+                    configured_image["guard_only"] = True
+                if step_id == "open_any_task":
+                    configured_image["requires_visible_uid"] = card_guard_uid
+                if step_id in {"open_supply", "open_car", "open_zombie"}:
+                    configured_image["requires_visible_uid"] = forward_guard_uid
+                if step_id.startswith("task_"):
+                    configured_image["skip_if_uid_visible"] = card_guard_uid
+                    configured_image["prevents_idle_completion"] = True
+                if step_id == "wait_in_progress":
+                    configured_image["action"] = "wait"
+                    configured_image["delay"] = 1.0
+            if task_id == "mail_rewards":
+                mail_sequence = (
+                    "open_mail",
+                    "select_system",
+                    "claim_system",
+                    "select_alliance",
+                    "claim_alliance",
+                    "select_reports",
+                    "claim_reports",
+                )
+                if step_id == "close_rewards":
+                    configured_image["routine_priority"] = 1
+                    configured_image["allow_repeat"] = True
+                    configured_image["block_seconds"] = 2.0
+                    configured_image["delay"] = 1.5
+                else:
+                    step_index = mail_sequence.index(step_id)
+                    configured_image["routine_priority"] = 10 + step_index * 10
+                    configured_image["runtime_step"] = step_id
+                    if step_index:
+                        configured_image["requires_runtime_steps"] = [mail_sequence[step_index - 1]]
+                    if step_id.startswith("select_"):
+                        configured_image["confidence"] = 0.70
+                        configured_image["orb_match_threshold"] = 3
+                if step_id == "open_mail":
+                    configured_image["home_screen_marker"] = True
+            if task_id == "completed_tasks":
+                configured_image["runtime_step"] = step_id
+                if step_id == "close_rewards":
+                    configured_image.pop("runtime_step", None)
+                    configured_image.update(
+                        {
+                            "routine_priority": 1,
+                            "allow_repeat": True,
+                            "block_seconds": 2.0,
+                            "delay": 1.5,
+                        }
+                    )
+                elif step_id == "open_tasks":
+                    configured_image["routine_priority"] = 10
+                    configured_image["home_screen_marker"] = True
+                elif step_id == "claim_main":
+                    configured_image.update(
+                        {
+                            "routine_priority": 20,
+                            "requires_runtime_steps": ["open_tasks"],
+                            "repeat_runtime_step": True,
+                            "allow_repeat": True,
+                            "block_seconds": 0.8,
+                        }
+                    )
+                elif step_id == "select_daily":
+                    configured_image["routine_priority"] = 30
+                    configured_image["requires_runtime_steps"] = ["open_tasks"]
+                    configured_image["confidence"] = 0.70
+                    configured_image["orb_match_threshold"] = 3
+                elif step_id == "claim_daily":
+                    configured_image.update(
+                        {
+                            "routine_priority": 40,
+                            "requires_runtime_steps": ["select_daily"],
+                            "repeat_runtime_step": True,
+                            "allow_repeat": True,
+                            "block_seconds": 0.8,
+                        }
+                    )
+                elif step_id.startswith("scroll_daily_"):
+                    scroll_index = int(step_id.rsplit("_", 1)[1])
+                    configured_image.update(
+                        {
+                            "routine_priority": 50 + scroll_index,
+                            "requires_runtime_steps": [
+                                "select_daily" if scroll_index == 1 else f"scroll_daily_{scroll_index - 1}"
+                            ],
+                            "action": "swipe",
+                            "swipe_from": [900, 600],
+                            "swipe_to": [900, 330],
+                            "swipe_duration_ms": 500,
+                            "confidence": 0.70,
+                            "orb_match_threshold": 3,
+                        }
+                    )
+                elif step_id.startswith("scroll_top_"):
+                    scroll_index = int(step_id.rsplit("_", 1)[1])
+                    configured_image.update(
+                        {
+                            "routine_priority": 60 + scroll_index,
+                            "requires_runtime_steps": [
+                                "scroll_daily_4" if scroll_index == 1 else f"scroll_top_{scroll_index - 1}"
+                            ],
+                            "action": "swipe",
+                            "swipe_from": [900, 330],
+                            "swipe_to": [900, 620],
+                            "swipe_duration_ms": 500,
+                            "confidence": 0.70,
+                            "orb_match_threshold": 3,
+                        }
+                    )
+                elif step_id.startswith("claim_activity_"):
+                    activity_level = int(step_id.rsplit("_", 1)[1])
+                    configured_image.update(
+                        {
+                            "routine_priority": 70 + activity_level,
+                            "requires_runtime_steps": ["scroll_top_4"],
+                        }
+                    )
             if task_id == "heal" and step_id == "collect_finished":
                 configured_image["required_setting_key"] = "collect_finished"
                 configured_image["required_setting_value"] = True
@@ -616,7 +1155,7 @@ def build_profile(destination):
                 configured_image["action"] = "heal_troops"
             manifest["images"].append(configured_image)
             payloads.append((output_path, entry_name))
-            if task_id not in {"alliance_donations", "radar"}:
+            if task_id not in {"alliance_donations", "radar", "mail_rewards", "completed_tasks"}:
                 completion_uid = uid
             print(f"{task_id:15s} {step_id:15s} score={score:.3f} size={crop.shape[1]}x{crop.shape[0]}")
         task["completion_uid"] = completion_uid
@@ -943,6 +1482,7 @@ def build_profile(destination):
                 completion_uid = uid
         next(task for task in tasks if task["id"] == task_id)["completion_uid"] = completion_uid
 
+    upgrade_radar_runtime_metadata(manifest["images"], tasks)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("profile.json", json.dumps(manifest, ensure_ascii=False, indent=2))

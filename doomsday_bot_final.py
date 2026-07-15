@@ -44,12 +44,15 @@ from doomsdaybot.matching import TemplateCache
 from doomsdaybot.routines import (
     default_routine_tasks,
     effective_task_group,
+    image_is_allowed_for_routine,
     is_task_effectively_enabled,
     next_due_task,
     next_run_after_finish,
+    no_action_retry_delay,
     normalize_routine_tasks,
     pick_due_task_index,
     runtime_step_is_ready,
+    upgrade_radar_runtime_metadata,
     upgrade_resource_runtime_metadata,
 )
 from doomsdaybot.state import BotState, compute_runtime_seconds
@@ -206,6 +209,7 @@ LANGUAGES = {
         'routine_task_started': "Задача: {name} | группа: {group} | шаблонов: {count}",
         'routine_waiting': "Ожидание: следующая задача «{name}» через {seconds} сек | походы {active}/{maximum}",
         'routine_completed': "Задача «{name}» завершена | следующий запуск через {minutes:g} мин",
+        'routine_no_action': "Задача «{name}» не выполнена: действий не найдено | повтор через {seconds} сек",
         'routine_full_marches': "Все походы заняты: {active}/{maximum}",
         'routine_reset_marches': "Сбросить походы",
         'routine_dialog_title': "Настройка рутинных задач",
@@ -406,6 +410,7 @@ LANGUAGES = {
         'routine_task_started': "Task: {name} | group: {group} | templates: {count}",
         'routine_waiting': "Waiting: next task '{name}' in {seconds} sec | marches {active}/{maximum}",
         'routine_completed': "Task '{name}' complete | next run in {minutes:g} min",
+        'routine_no_action': "Task '{name}' was not completed: no action found | retry in {seconds} sec",
         'routine_full_marches': "All marches are busy: {active}/{maximum}",
         'routine_reset_marches': "Reset marches",
         'routine_dialog_title': "Routine task settings",
@@ -569,6 +574,7 @@ class AutoClicker:
         self.routine_current_action_count = 0
         self.routine_action_counts = {}
         self.routine_completed_steps = set()
+        self.routine_idle_confirmation_count = 0
         self.routine_only_task_id = None
 
         # Profiles let one LDPlayer instance rotate through saved in-game accounts.
@@ -1164,7 +1170,8 @@ class AutoClicker:
 
     def _validate_detected_match(self, img_config, bbox):
         if self.orb_enabled:
-            if not self._check_orb_match(img_config["path"], bbox):
+            orb_threshold = int(img_config.get("orb_match_threshold", self.orb_match_threshold))
+            if not self._check_orb_match(img_config["path"], bbox, orb_threshold):
                 return False, "ORB"
         elif self.ssim_enabled and not self._ssim_check(img_config["path"], bbox):
             return False, "SSIM"
@@ -1487,6 +1494,7 @@ class AutoClicker:
                 added += 1
 
         matching = manifest.get("matching", {})
+        upgrade_radar_runtime_metadata(self.search_images, self.routine_tasks)
         self.scale_enabled = bool(matching.get("scale_enabled", self.scale_enabled))
         self.scale_min = float(matching.get("scale_min", self.scale_min))
         self.scale_max = float(matching.get("scale_max", self.scale_max))
@@ -1615,6 +1623,12 @@ class AutoClicker:
                     )
                     if upgraded_resources:
                         logger.info("Resource runtime sequence upgraded for %s templates", upgraded_resources)
+                    upgraded_radar = upgrade_radar_runtime_metadata(
+                        self.search_images,
+                        self.routine_tasks,
+                    )
+                    if upgraded_radar:
+                        logger.info("Radar template priorities upgraded for %s templates", upgraded_radar)
 
                     self.stats = {img['path']: 0 for img in self.search_images}
                     logger.info(f"Загружено {len(self.search_images)} областей из конфига")
@@ -2113,6 +2127,7 @@ class AutoClicker:
         self.routine_current_action_count = 0
         self.routine_action_counts = {}
         self.routine_completed_steps = set()
+        self.routine_idle_confirmation_count = 0
         template_count = len(self.get_routine_templates(task, active_only=True))
         self.set_status_message(
             self.tr(
@@ -2124,6 +2139,59 @@ class AutoClicker:
             force=True,
         )
         return task
+
+    def _routine_idle_completion_ready(self, task):
+        if not task.get("complete_when_idle"):
+            return False
+        if self.uses_adb:
+            frame = self._capture_adb_frame(force=True)
+            black_ratio = float(np.mean(np.max(frame, axis=2) < 8))
+            if black_ratio > 0.25:
+                self.routine_idle_confirmation_count = 0
+                logger.warning(
+                    "Idle completion rejected: incomplete ADB frame, black ratio %.3f",
+                    black_ratio,
+                )
+                return False
+        guard_uid = str(task.get("idle_completion_guard_uid") or "")
+        if not guard_uid:
+            logger.warning("Routine %s has no idle completion guard", task.get("id"))
+            return False
+        guard_image = next(
+            (image for image in self.search_images if str(image.get("uid") or "") == guard_uid),
+            None,
+        )
+        if guard_image is None:
+            logger.warning("Idle completion guard %s is missing", guard_uid)
+            return False
+        location, _bbox, _confidence = self._locate_image(guard_image)
+        if location is None:
+            self.routine_idle_confirmation_count = 0
+            return False
+        for image in self.search_images:
+            if not image.get("prevents_idle_completion") or not self._is_active(image):
+                continue
+            blocker_location, _blocker_bbox, _blocker_confidence = self._locate_image(image)
+            if blocker_location is not None:
+                self.routine_idle_confirmation_count = 0
+                logger.info(
+                    "Idle completion blocked by visible template %s",
+                    image.get("description"),
+                )
+                return False
+        required = max(1, int(task.get("idle_confirmations", 1) or 1))
+        self.routine_idle_confirmation_count += 1
+        logger.info(
+            "Idle completion confirmation %s/%s for %s",
+            self.routine_idle_confirmation_count,
+            required,
+            task.get("id"),
+        )
+        return self.routine_idle_confirmation_count >= required
+
+    def _routine_runtime_completion_ready(self, task):
+        required_step = str(task.get("completion_runtime_step") or "")
+        return not required_step or required_step in self.routine_completed_steps
 
     def _finish_current_routine(self, now=None, completion_clicked=False):
         now = time.time() if now is None else float(now)
@@ -2159,7 +2227,12 @@ class AutoClicker:
         if should_count_march:
             self._register_routine_march(task, now)
 
-        if task.get("id") in {"alliance_donations", "gathering_boost"}:
+        if task.get("id") in {
+            "alliance_donations",
+            "gathering_boost",
+            "mail_rewards",
+            "completed_tasks",
+        }:
             self._return_to_main_screen()
 
         if task.get("id") == "prize_hunt" and task.get("settings", {}).get("repeat_until_stopped", True):
@@ -2180,6 +2253,37 @@ class AutoClicker:
         self.routine_current_action_count = 0
         self.routine_action_counts = {}
         self.routine_completed_steps = set()
+        self.routine_idle_confirmation_count = 0
+
+    def _defer_current_routine_no_action(self, now=None):
+        now = time.time() if now is None else float(now)
+        task = self.get_routine_task(self.current_routine_task_id)
+        if not task:
+            self.current_routine_task_id = None
+            return
+
+        retry_delay = no_action_retry_delay(task)
+        self.routine_next_run[task["id"]] = now + retry_delay
+        logger.warning(
+            "Routine %s timed out without actions; retrying in %.0f seconds",
+            task.get("id"),
+            retry_delay,
+        )
+        self.set_status_message(
+            self.tr(
+                'routine_no_action',
+                name=self.get_routine_task_name(task),
+                seconds=max(1, int(retry_delay)),
+            ),
+            force=True,
+        )
+        self.current_routine_index = (self.current_routine_index + 1) % len(self.routine_tasks)
+        self.current_routine_task_id = None
+        self.routine_current_had_action = False
+        self.routine_current_action_count = 0
+        self.routine_action_counts = {}
+        self.routine_completed_steps = set()
+        self.routine_idle_confirmation_count = 0
 
     def start_normal(self):
         self.routine_mode = False
@@ -2412,7 +2516,7 @@ class AutoClicker:
             return pyautogui.Point(center_x, center_y), (left, top, width, height), best_val
         return None, None, 0
 
-    def _check_orb_match(self, template_path, bbox):
+    def _check_orb_match(self, template_path, bbox, match_threshold=None):
         if not isinstance(bbox, tuple) or len(bbox) != 4 or not all(isinstance(v, int) for v in bbox):
             logger.error(f"ORB: некорректный bbox {bbox}, пропускаем проверку")
             return True
@@ -2443,8 +2547,9 @@ class AutoClicker:
                 if m.distance < 0.75 * n.distance:
                     good.append(m)
 
-        logger.info(f"ORB: хороших совпадений {len(good)} (порог {self.orb_match_threshold})")
-        return len(good) >= self.orb_match_threshold
+        threshold = self.orb_match_threshold if match_threshold is None else max(1, int(match_threshold))
+        logger.info(f"ORB: хороших совпадений {len(good)} (порог {threshold})")
+        return len(good) >= threshold
 
     def _clicker_loop(self):
         pyautogui.PAUSE = 0
@@ -2478,7 +2583,11 @@ class AutoClicker:
                     current_group = effective_task_group(current_routine_task)
                     system_images = [
                         img for img in self.search_images
-                        if img.get("group") == SYSTEM_TEMPLATE_GROUP and self._is_active(img)
+                        if (
+                            img.get("group") == SYSTEM_TEMPLATE_GROUP
+                            and self._is_active(img)
+                            and image_is_allowed_for_routine(img, current_routine_task.get("id"))
+                        )
                     ]
                     active_images = [
                         img for img in self.search_images
@@ -2488,6 +2597,7 @@ class AutoClicker:
                             and runtime_step_is_ready(img, self.routine_completed_steps)
                         )
                     ]
+                    active_images.sort(key=lambda img: int(img.get("routine_priority", 100)))
                     active_images = system_images + active_images
                     logger.info(f"Рутинная задача {current_group}: активных областей {len(active_images)}")
                 elif self.cycle_mode and self.cycle_groups:
@@ -2504,7 +2614,17 @@ class AutoClicker:
                 if not active_images:
                     self.set_status_message("Нет активных областей", force=True)
                     if self.routine_mode and current_routine_task:
-                        self._finish_current_routine(now)
+                        if self._routine_idle_completion_ready(current_routine_task) or (
+                            self.routine_current_had_action
+                            and not current_routine_task.get("complete_when_idle")
+                            and not current_routine_task.get("completion_uid")
+                            and self._routine_runtime_completion_ready(current_routine_task)
+                        ):
+                            self._finish_current_routine(now)
+                        elif current_routine_task.get("complete_when_idle"):
+                            self.routine_last_action_time = now
+                        else:
+                            self._defer_current_routine_no_action(now)
                         continue
                     if self.cycle_mode and self.cycle_groups:
                         idle = time.time() - self.last_action_time
@@ -2539,6 +2659,8 @@ class AutoClicker:
                         if img_config["group"] and img_config["group"] in self.groups:
                             if not self.groups[img_config["group"]]:
                                 continue
+                        if img_config.get("guard_only"):
+                            continue
 
                         required_setting_key = str(img_config.get("required_setting_key") or "")
                         if required_setting_key:
@@ -2562,6 +2684,24 @@ class AutoClicker:
                                         "Пропуск %s: защитный шаблон %s уже виден",
                                         img_config.get("description"),
                                         guard_image.get("description"),
+                                    )
+                                    continue
+
+                        required_visible_uid = str(img_config.get("requires_visible_uid") or "")
+                        if required_visible_uid:
+                            required_image = next(
+                                (image for image in group_images if image.get("uid") == required_visible_uid),
+                                None,
+                            )
+                            if required_image:
+                                required_location, _required_bbox, _required_confidence = self._locate_image(
+                                    required_image
+                                )
+                                if not required_location:
+                                    logger.debug(
+                                        "Пропуск %s: обязательный шаблон %s не виден",
+                                        img_config.get("description"),
+                                        required_image.get("description"),
                                     )
                                     continue
 
@@ -2612,6 +2752,7 @@ class AutoClicker:
                                 if self.routine_mode and not is_system_template:
                                     self.routine_current_had_action = True
                                     self.routine_last_action_time = time.time()
+                                    self.routine_idle_confirmation_count = 0
                                     runtime_step = str(img_config.get("runtime_step") or "")
                                     if runtime_step:
                                         self.routine_completed_steps.add(runtime_step)
@@ -2673,7 +2814,21 @@ class AutoClicker:
                     idle = time.time() - self.routine_last_action_time
                     timeout = float(current_routine_task.get("timeout_seconds", 8.0))
                     if not action_occurred and idle >= timeout:
-                        self._finish_current_routine(time.time())
+                        if self._routine_idle_completion_ready(current_routine_task) or (
+                            self.routine_current_had_action
+                            and not current_routine_task.get("complete_when_idle")
+                            and not current_routine_task.get("completion_uid")
+                            and self._routine_runtime_completion_ready(current_routine_task)
+                        ):
+                            self._finish_current_routine(time.time())
+                        elif current_routine_task.get("complete_when_idle"):
+                            self.routine_last_action_time = time.time()
+                            logger.info(
+                                "Routine %s is idle outside its completion screen; continuing",
+                                current_routine_task.get("id"),
+                            )
+                        else:
+                            self._defer_current_routine_no_action(time.time())
                         continue
                 elif self.cycle_mode and self.cycle_groups:
                     idle = time.time() - self.last_action_time
@@ -3046,6 +3201,25 @@ class AutoClicker:
                 self.set_status_message("Доступное исследование не найдено", force=True)
             self._invalidate_capture()
             img_config["last_used"] = time.time()
+            self._interruptible_sleep(img_config.get("delay", self.sleep_found))
+            return
+
+        if action == "swipe":
+            swipe_from = img_config.get("swipe_from", (900, 600))
+            swipe_to = img_config.get("swipe_to", (900, 330))
+            duration_ms = max(100, int(img_config.get("swipe_duration_ms", 500)))
+            from_x = int(round(float(swipe_from[0]) * display.scale_x))
+            from_y = int(round(float(swipe_from[1]) * display.scale_y))
+            to_x = int(round(float(swipe_to[0]) * display.scale_x))
+            to_y = int(round(float(swipe_to[1]) * display.scale_y))
+            if self.uses_adb:
+                self.adb_client.swipe(from_x, from_y, to_x, to_y, duration_ms)
+            else:
+                pyautogui.moveTo(from_x, from_y)
+                pyautogui.dragTo(to_x, to_y, duration=duration_ms / 1000.0, button="left")
+            self._invalidate_capture()
+            img_config["last_used"] = time.time()
+            self.set_status_message(img_config.get("description", "Прокрутка списка"), force=True)
             self._interruptible_sleep(img_config.get("delay", self.sleep_found))
             return
 
