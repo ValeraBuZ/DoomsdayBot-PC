@@ -136,6 +136,138 @@ DAILY_TASK_STEPS = {
             False,
         ),
     ),
+    "processing_factory": (
+        (
+            "pan_north",
+            "Переместить камеру к заводу",
+            "refinery_home_clear.png",
+            (15, 415, 75, 476),
+            (0, 0),
+            False,
+        ),
+        (
+            "select_refinery",
+            "Найти свободный Завод по обработке",
+            "refinery_pan_top.png",
+            (800, 175, 960, 305),
+            (0, 0),
+            True,
+        ),
+        (
+            "select_refinery_active",
+            "Найти работающий Завод по обработке",
+            "refinery_north_boundary.png",
+            (800, 420, 1000, 610),
+            (-40, 55),
+            True,
+        ),
+        (
+            "open_refinery",
+            "Открыть Завод по обработке",
+            "refinery_selected.png",
+            (789, 292, 854, 370),
+            (0, 0),
+            False,
+        ),
+        (
+            "open_refinery_boundary",
+            "Открыть Завод по обработке после выравнивания камеры",
+            "manual_select_retry.png",
+            (785, 480, 855, 565),
+            (0, 0),
+            False,
+        ),
+        (
+            "factory_guard",
+            "Экран Завода по обработке открыт",
+            "refinery_open.png",
+            (81, 18, 388, 62),
+            (0, 0),
+            True,
+        ),
+        (
+            "open_slot",
+            "Открыть свободную линию обработки",
+            "refinery_open.png",
+            (608, 159, 696, 250),
+            (0, 0),
+            False,
+        ),
+        (
+            "process_all",
+            "Запустить все свободные линии",
+            "refinery_slot_open.png",
+            (371, 450, 623, 504),
+            (0, 0),
+            False,
+        ),
+    ),
+    "processing_contest": (
+        (
+            "pan_north",
+            "Переместить камеру к заводу",
+            "refinery_home_clear.png",
+            (15, 415, 75, 476),
+            (0, 0),
+            False,
+        ),
+        (
+            "select_refinery",
+            "Найти свободный Завод по обработке",
+            "refinery_pan_top.png",
+            (800, 175, 960, 305),
+            (0, 0),
+            True,
+        ),
+        (
+            "select_refinery_active",
+            "Найти работающий Завод по обработке",
+            "refinery_north_boundary.png",
+            (800, 420, 1000, 610),
+            (-40, 55),
+            True,
+        ),
+        (
+            "open_refinery",
+            "Открыть Завод по обработке",
+            "refinery_selected.png",
+            (789, 292, 854, 370),
+            (0, 0),
+            False,
+        ),
+        (
+            "open_refinery_boundary",
+            "Открыть Завод по обработке после выравнивания камеры",
+            "manual_select_retry.png",
+            (785, 480, 855, 565),
+            (0, 0),
+            False,
+        ),
+        (
+            "open_contest",
+            "Открыть Конкурс по обработке",
+            "refinery_open.png",
+            (7, 245, 130, 370),
+            (0, 0),
+            False,
+        ),
+        (
+            "contest_guard",
+            "Экран Конкурса по обработке открыт",
+            "refinery_contest_after_claim.png",
+            (80, 17, 465, 64),
+            (0, 0),
+            True,
+        ),
+        (
+            "collect_all",
+            "Собрать все награды конкурса",
+            "refinery_contest.png",
+            (570, 630, 880, 681),
+            (0, 0),
+            False,
+        ),
+    ),
     "mail_rewards": (
         (
             "open_mail",
@@ -1058,6 +1190,56 @@ def build_profile(destination):
                 configured_image["block_seconds"] = 2.0
                 configured_image["confidence"] = 0.80
                 configured_image["orb_match_threshold"] = 3
+            if task_id in {"processing_factory", "processing_contest"}:
+                actionable_steps = ["pan_north", "select_refinery", "open_refinery"]
+                actionable_steps.append(
+                    "open_slot" if task_id == "processing_factory" else "open_contest"
+                )
+                actionable_steps.append(
+                    "process_all" if task_id == "processing_factory" else "collect_all"
+                )
+                if step_id.endswith("_guard"):
+                    configured_image["guard_only"] = True
+                    configured_image["confidence"] = 0.75
+                    configured_image["orb_match_threshold"] = 3
+                else:
+                    runtime_step = (
+                        "select_refinery"
+                        if step_id.startswith("select_refinery")
+                        else "open_refinery"
+                        if step_id.startswith("open_refinery")
+                        else step_id
+                    )
+                    step_index = actionable_steps.index(runtime_step)
+                    configured_image["runtime_step"] = runtime_step
+                    configured_image["routine_priority"] = 10 + step_index * 10
+                    if step_index:
+                        configured_image["requires_runtime_steps"] = [
+                            actionable_steps[step_index - 1]
+                        ]
+                if step_id.startswith("pan_north"):
+                    configured_image.update(
+                        {
+                            "action": "swipe",
+                            "swipe_from": [650, 260],
+                            "swipe_to": [650, 610],
+                            "swipe_duration_ms": 350,
+                            "swipe_repeat_count": 6,
+                            "swipe_repeat_pause": 0.2,
+                            "home_screen_marker": True,
+                            "confidence": 0.75,
+                            "orb_match_threshold": 3,
+                        }
+                    )
+                elif step_id.startswith("select_refinery"):
+                    configured_image["confidence"] = 0.68
+                    configured_image["orb_match_threshold"] = 3
+                elif step_id.startswith("open_refinery"):
+                    configured_image["confidence"] = 0.75
+                    configured_image["orb_match_threshold"] = 3
+                elif step_id in {"open_slot", "process_all", "collect_all"}:
+                    configured_image["confidence"] = 0.80
+                    configured_image["orb_match_threshold"] = 3
             if task_id == "mail_rewards":
                 mail_sequence = (
                     "open_mail",

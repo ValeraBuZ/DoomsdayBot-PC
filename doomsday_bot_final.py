@@ -2232,6 +2232,8 @@ class AutoClicker:
             "gathering_boost",
             "mail_rewards",
             "completed_tasks",
+            "processing_factory",
+            "processing_contest",
         }:
             self._return_to_main_screen()
 
@@ -3208,15 +3210,22 @@ class AutoClicker:
             swipe_from = img_config.get("swipe_from", (900, 600))
             swipe_to = img_config.get("swipe_to", (900, 330))
             duration_ms = max(100, int(img_config.get("swipe_duration_ms", 500)))
+            repeat_count = max(1, min(10, int(img_config.get("swipe_repeat_count", 1))))
+            repeat_pause = max(0.0, min(1.0, float(img_config.get("swipe_repeat_pause", 0.2))))
             from_x = int(round(float(swipe_from[0]) * display.scale_x))
             from_y = int(round(float(swipe_from[1]) * display.scale_y))
             to_x = int(round(float(swipe_to[0]) * display.scale_x))
             to_y = int(round(float(swipe_to[1]) * display.scale_y))
-            if self.uses_adb:
-                self.adb_client.swipe(from_x, from_y, to_x, to_y, duration_ms)
-            else:
-                pyautogui.moveTo(from_x, from_y)
-                pyautogui.dragTo(to_x, to_y, duration=duration_ms / 1000.0, button="left")
+            for repeat_index in range(repeat_count):
+                if self.stop_event.is_set() or self.stop_hotkey_pressed:
+                    break
+                if self.uses_adb:
+                    self.adb_client.swipe(from_x, from_y, to_x, to_y, duration_ms)
+                else:
+                    pyautogui.moveTo(from_x, from_y)
+                    pyautogui.dragTo(to_x, to_y, duration=duration_ms / 1000.0, button="left")
+                if repeat_index + 1 < repeat_count and repeat_pause:
+                    self._interruptible_sleep(repeat_pause)
             self._invalidate_capture()
             img_config["last_used"] = time.time()
             self.set_status_message(img_config.get("description", "Прокрутка списка"), force=True)
