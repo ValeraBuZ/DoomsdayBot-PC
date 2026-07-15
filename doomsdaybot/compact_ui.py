@@ -421,18 +421,37 @@ def build_compact_ui(root, bot):
 
     ttk.Spinbox(marches, from_=1, to=5, width=3, textvariable=marches_var, command=save_marches).pack(side=tk.LEFT)
 
-    adb_frame = ttk.Frame(outer)
+    adb_frame = ttk.LabelFrame(outer, text="ADB и экран", padding=7)
     adb_frame.pack(fill=tk.X, pady=4)
-    adb_state = tk.StringVar(value=f"ADB: {bot.adb_serial}")
-    ttk.Label(adb_frame, textvariable=adb_state).pack(side=tk.LEFT)
+    adb_state = tk.StringVar(value="ADB и экран: проверка...")
+    ttk.Label(adb_frame, textvariable=adb_state, wraplength=700).pack(fill=tk.X, side=tk.BOTTOM, pady=(5, 0))
+    adb_controls = ttk.Frame(adb_frame)
+    adb_controls.pack(fill=tk.X, side=tk.TOP)
+    check_busy = {"value": False}
 
-    def check_adb():
-        ok = bot.check_adb_connection(notify=False)
-        adb_state.set(f"ADB: {bot.adb_serial} — {'подключено' if ok else 'нет связи'}")
-        if ok:
-            bot.set_status_message(adb_state.get(), force=True)
+    def check_environment():
+        if check_busy["value"]:
+            return
+        check_busy["value"] = True
+        adb_state.set("ADB и экран: проверка...")
+        check_button.configure(state=tk.DISABLED)
 
-    repair_button = ttk.Button(adb_frame, text="Восстановить ADB")
+        def worker():
+            ok = bot.check_runtime_environment(notify=False)
+            summary = bot.get_environment_summary()
+
+            def finish():
+                check_busy["value"] = False
+                check_button.configure(state=tk.NORMAL)
+                adb_state.set(summary)
+                if not ok:
+                    bot.sync_status_message()
+
+            root.after(0, finish)
+
+        threading.Thread(target=worker, name="EnvironmentCheck", daemon=True).start()
+
+    repair_button = ttk.Button(adb_controls, text="Восстановить ADB")
 
     def repair_adb():
         target = bot.get_adb_repair_target()
@@ -456,7 +475,7 @@ def build_compact_ui(root, bot):
 
             def finish():
                 repair_button.configure(state=tk.NORMAL)
-                check_adb()
+                check_environment()
                 title = "Связь восстановлена" if ok else "ADB не подключён"
                 message = (
                     f"Подключено устройство {bot.adb_serial}."
@@ -470,7 +489,12 @@ def build_compact_ui(root, bot):
 
     repair_button.configure(command=repair_adb)
     repair_button.pack(side=tk.RIGHT)
-    ttk.Button(adb_frame, text="Проверить", command=check_adb).pack(side=tk.RIGHT, padx=5)
+    check_button = ttk.Button(
+        adb_controls,
+        text="Проверить ADB и экран",
+        command=check_environment,
+    )
+    check_button.pack(side=tk.RIGHT, padx=5)
 
     def create_report():
         try:
@@ -480,7 +504,7 @@ def build_compact_ui(root, bot):
             return
         messagebox.showinfo("Отчёт создан", f"Файл сохранён:\n{report_path}", parent=root)
 
-    ttk.Button(adb_frame, text="Создать отчёт", command=create_report).pack(side=tk.RIGHT, padx=5)
+    ttk.Button(adb_controls, text="Создать отчёт", command=create_report).pack(side=tk.RIGHT, padx=5)
 
     status_var = tk.StringVar(value=bot.status_message or "Готов к запуску")
     bot.attach_status_var(status_var)
@@ -511,13 +535,14 @@ def build_compact_ui(root, bot):
             pause_button.configure(state=tk.NORMAL, text="Продолжить" if bot.is_paused else "Пауза")
             stop_button.configure(state=tk.NORMAL)
         else:
-            start_button.configure(state=tk.NORMAL)
-            prize_button.configure(state=tk.NORMAL)
+            ready_state = tk.DISABLED if check_busy["value"] else tk.NORMAL
+            start_button.configure(state=ready_state)
+            prize_button.configure(state=ready_state)
             pause_button.configure(state=tk.DISABLED, text="Пауза")
             stop_button.configure(state=tk.DISABLED)
         root.compact_after_id = root.after(500, update_state)
 
     root.bind("<<AccountChanged>>", lambda _event: refresh_all())
     refresh_all()
-    check_adb()
+    root.after(250, check_environment)
     update_state()

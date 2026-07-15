@@ -29,6 +29,7 @@ from doomsdaybot.accounts import (
 from doomsdaybot.adb import AdbClient, AdbError, find_adb_executable
 from doomsdaybot.compact_ui import build_compact_ui
 from doomsdaybot.diagnostics import create_diagnostic_report
+from doomsdaybot.display import make_display_profile, matching_scales
 from doomsdaybot.grouping import build_group_iteration_plan, parse_click_sequence, parse_time_to_minutes, validate_hour_min
 from doomsdaybot.ldplayer import (
     adb_debug_enabled,
@@ -54,7 +55,7 @@ from doomsdaybot.state import BotState, compute_runtime_seconds
 from doomsdaybot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.1.2"
+APP_VERSION = "3.1.3"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -586,6 +587,11 @@ class AutoClicker:
         self._adb_frame_cache = None
         self._adb_frame_timestamp = 0.0
         self._adb_capture_lock = threading.RLock()
+        self.player_width = 1280
+        self.player_height = 720
+        self.player_name = ""
+        self.player_index = None
+        self.environment_ready = False
 
         self.ssim_enabled = True
         self.ssim_threshold = 0.9
@@ -685,6 +691,77 @@ class AutoClicker:
             self._adb_frame_cache = None
             self._adb_frame_timestamp = 0.0
 
+    def get_display_profile(self):
+        return make_display_profile(self.player_width, self.player_height)
+
+    def _apply_player_resolution(self, width, height, persist=False):
+        profile = make_display_profile(width, height)
+        changed = (profile.width, profile.height) != (self.player_width, self.player_height)
+        self.player_width = profile.width
+        self.player_height = profile.height
+        if changed:
+            logger.info(
+                "Player resolution detected: %sx%s; template scale %s",
+                profile.width,
+                profile.height,
+                profile.percent_label,
+            )
+            if persist:
+                self.save_config()
+        return profile
+
+    def get_environment_summary(self):
+        profile = self.get_display_profile()
+        player = f"LDPlayer {self.player_index} {self.player_name}" if self.player_index is not None else "LDPlayer"
+        state = "\u0433\u043e\u0442\u043e\u0432\u043e" if self.environment_ready else "\u043d\u0435\u0442 \u0441\u0432\u044f\u0437\u0438"
+        return (
+            f"ADB: {self.adb_serial} | {player} | "
+            f"{profile.width}x{profile.height} | \u043f\u043e\u0434\u0433\u043e\u043d\u043a\u0430 {profile.percent_label} | {state}"
+        )
+
+    def check_runtime_environment(self, notify=True):
+        self.environment_ready = False
+        self.player_index = None
+        self.player_name = ""
+        if not self.uses_adb:
+            self.input_backend = "adb"
+            self._refresh_adb_client()
+        if not self.check_adb_connection(notify=False):
+            if notify:
+                self._show_notification('error', 'adb_required', serial=self.adb_serial)
+            return False
+        try:
+            frame = self._capture_adb_frame(force=True)
+        except (AdbError, OSError, ValueError) as exc:
+            logger.warning("ADB screenshot check failed for %s: %s", self.adb_serial, exc)
+            self.set_status_message(
+                f"ADB: {self.adb_serial} | \u043d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u0440\u043e\u0432\u0435\u0440\u0438\u0442\u044c \u044d\u043a\u0440\u0430\u043d",
+                force=True,
+            )
+            return False
+
+        profile = self._apply_player_resolution(frame.shape[1], frame.shape[0], persist=True)
+        _ldconsole, instances = self._ldplayer_instances()
+        instance = next((item for item in instances if item.adb_serial == self.adb_serial), None)
+        if instance:
+            self.player_index = instance.index
+            self.player_name = instance.name
+            if (instance.width, instance.height) != (profile.width, profile.height):
+                logger.info(
+                    "LDPlayer configured resolution %sx%s; live game frame %sx%s",
+                    instance.width,
+                    instance.height,
+                    profile.width,
+                    profile.height,
+                )
+        self.environment_ready = True
+        self.save_config()
+        summary = self.get_environment_summary()
+        self.set_status_message(summary, force=True)
+        if notify:
+            self._show_notification('success', 'info', message=summary)
+        return True
+
     def set_input_backend(self, backend, serial=None, adb_path=None):
         self.input_backend = "adb" if backend == "adb" else "screen"
         if serial is not None and str(serial).strip():
@@ -724,7 +801,7 @@ class AutoClicker:
             logger.info("Профиль автоматически привязан к ADB %s", serial)
             self.save_config()
             if self.root:
-                self.root.event_generate("<<AccountChanged>>", when="tail")
+                self.gui_queue.put((self.root.event_generate, ("<<AccountChanged>>",), {"when": "tail"}))
         return True
 
     def _auto_detect_adb_connection(self):
@@ -851,6 +928,8 @@ class AutoClicker:
             "input_backend": self.input_backend,
             "adb_serial": self.adb_serial,
             "adb_path": self.adb_path,
+            "player_resolution": f"{self.player_width}x{self.player_height}",
+            "resolution_scale": self.get_display_profile().percent_label,
             "adb_connected": bool(self.adb_client and self.adb_client.is_available()),
             "templates": len(self.search_images),
             "routine_tasks": len(self.routine_tasks),
@@ -885,6 +964,7 @@ class AutoClicker:
             frame = self.adb_client.screenshot_bgr()
             self._adb_frame_cache = frame
             self._adb_frame_timestamp = time.monotonic()
+            self._apply_player_resolution(frame.shape[1], frame.shape[0], persist=False)
             return frame
 
     def _capture_screen_bgr(self, region=None, force=False):
@@ -970,14 +1050,17 @@ class AutoClicker:
         best_loc = None
         best_size = None
         for scale in scales:
-            scale = float(scale)
-            if scale <= 0:
+            if isinstance(scale, (tuple, list)):
+                scale_x, scale_y = map(float, scale[:2])
+            else:
+                scale_x = scale_y = float(scale)
+            if scale_x <= 0 or scale_y <= 0:
                 continue
-            if abs(scale - 1.0) < 0.0001:
+            if abs(scale_x - 1.0) < 0.0001 and abs(scale_y - 1.0) < 0.0001:
                 resized = template
             else:
-                width = int(template.shape[1] * scale)
-                height = int(template.shape[0] * scale)
+                width = int(template.shape[1] * scale_x)
+                height = int(template.shape[0] * scale_y)
                 if width < 5 or height < 5:
                     continue
                 resized = cv2.resize(template, (width, height), interpolation=cv2.INTER_LINEAR)
@@ -1017,10 +1100,12 @@ class AutoClicker:
     def _locate_image(self, img_config):
         confidence = img_config.get("confidence", 0.8)
         if self.uses_adb:
-            scales = (
-                np.linspace(self.scale_min, self.scale_max, self.scale_steps)
-                if self.scale_enabled and img_config.get("use_scaling", True)
-                else (1.0,)
+            scales = matching_scales(
+                self.get_display_profile(),
+                extra_enabled=self.scale_enabled and img_config.get("use_scaling", True),
+                minimum=self.scale_min,
+                maximum=self.scale_max,
+                steps=self.scale_steps,
             )
             return self._find_template_opencv(
                 img_config["path"],
@@ -1473,6 +1558,8 @@ class AutoClicker:
                         self.input_backend = 'screen'
                     self.adb_serial = str(data.get('adb_serial', self.adb_serial) or self.adb_serial)
                     self.adb_path = str(data.get('adb_path', self.adb_path) or self.adb_path)
+                    self.player_width = max(1, int(data.get('player_width', self.player_width)))
+                    self.player_height = max(1, int(data.get('player_height', self.player_height)))
                     self.account_profiles = normalize_account_profiles(
                         data.get('account_profiles'),
                         self.adb_serial,
@@ -1564,6 +1651,8 @@ class AutoClicker:
                 'input_backend': self.input_backend,
                 'adb_serial': self.adb_serial,
                 'adb_path': self.adb_path,
+                'player_width': self.player_width,
+                'player_height': self.player_height,
             }
             save_json_with_backup(CONFIG_FILE, data, backup_dir=CONFIG_BACKUP_DIR, keep_backups=10)
             logger.debug("Конфиг сохранён")
@@ -2132,7 +2221,7 @@ class AutoClicker:
     def start(self):
         if not self.stop_event.is_set():
             return True
-        if self.uses_adb and not self.check_adb_connection(notify=False):
+        if self.uses_adb and not self.check_runtime_environment(notify=False):
             self.set_status_message(self.tr('adb_required', serial=self.adb_serial), force=True)
             self._show_notification('error', 'adb_required', serial=self.adb_serial)
             return False
@@ -2634,8 +2723,9 @@ class AutoClicker:
     def _execute_action(self, img_config, location):
         x, y = location.x, location.y
         offset = img_config.get("click_offset", (0, 0))
-        target_x = x + offset[0]
-        target_y = y + offset[1]
+        display = self.get_display_profile() if self.uses_adb else make_display_profile(1280, 720)
+        target_x = x + offset[0] * display.scale_x
+        target_y = y + offset[1] * display.scale_y
 
         action = img_config.get("action", "click")
         numbers = self._resolve_action_numbers(img_config)
@@ -2643,8 +2733,10 @@ class AutoClicker:
 
         if action == "resource_search":
             level = min(8, max(1, int(self._current_task_settings().get("resource_level", 7))))
-            minus_x, minus_y = int(round(target_x - 146)), int(round(target_y - 76))
-            plus_x, plus_y = int(round(target_x + 144)), int(round(target_y - 76))
+            minus_x = int(round(target_x - 146 * display.scale_x))
+            minus_y = int(round(target_y - 76 * display.scale_y))
+            plus_x = int(round(target_x + 144 * display.scale_x))
+            plus_y = minus_y
             if self.uses_adb:
                 for _ in range(8):
                     self.adb_client.tap(minus_x, minus_y)
@@ -2681,8 +2773,10 @@ class AutoClicker:
                 level = maximum
             else:
                 level = min(5, max(1, int(settings.get("level", 5))))
-            minus_x, minus_y = int(round(target_x - 145)), int(round(target_y - 76))
-            plus_x, plus_y = int(round(target_x + 145)), int(round(target_y - 76))
+            minus_x = int(round(target_x - 145 * display.scale_x))
+            minus_y = int(round(target_y - 76 * display.scale_y))
+            plus_x = int(round(target_x + 145 * display.scale_x))
+            plus_y = minus_y
             if self.uses_adb:
                 for _ in range(50):
                     self.adb_client.tap(minus_x, minus_y)
@@ -2836,21 +2930,27 @@ class AutoClicker:
             if branch == "off":
                 return
             branch_x, branch_y = (70, 300) if branch == "war" else (70, 165)
+            branch_x = int(round(branch_x * display.scale_x))
+            branch_y = int(round(branch_y * display.scale_y))
+            swipe_from = (int(1000 * display.scale_x), int(500 * display.scale_y))
+            swipe_to = (int(300 * display.scale_x), int(500 * display.scale_y))
             if self.uses_adb:
                 self.adb_client.tap(branch_x, branch_y)
                 time.sleep(0.5)
                 for _ in range(4):
-                    self.adb_client.swipe(1000, 500, 300, 500, 650)
+                    self.adb_client.swipe(*swipe_from, *swipe_to, 650)
                     time.sleep(0.25)
             else:
                 pyautogui.click(branch_x, branch_y)
                 time.sleep(0.5)
                 for _ in range(4):
-                    pyautogui.moveTo(1000, 500)
-                    pyautogui.dragTo(300, 500, duration=0.65, button="left")
+                    pyautogui.moveTo(*swipe_from)
+                    pyautogui.dragTo(*swipe_to, duration=0.65, button="left")
                     time.sleep(0.25)
 
             frame, _origin = self._capture_screen_bgr(force=True)
+            if frame.shape[1] != 1280 or frame.shape[0] != 720:
+                frame = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_LINEAR)
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
             circles = cv2.HoughCircles(
@@ -2875,6 +2975,8 @@ class AutoClicker:
                         candidates.append((x_value, y_value))
             if candidates:
                 research_x, research_y = min(candidates, key=lambda point: (point[0], point[1]))
+                research_x = int(round(research_x * display.scale_x))
+                research_y = int(round(research_y * display.scale_y))
                 if self.uses_adb:
                     self.adb_client.tap(research_x, research_y)
                 else:
@@ -2897,8 +2999,8 @@ class AutoClicker:
                 self.adb_client.tap(current_x, current_y)
                 time.sleep(0.2)
                 for dx, dy in click_seq:
-                    current_x += int(dx)
-                    current_y += int(dy)
+                    current_x += int(round(dx * display.scale_x))
+                    current_y += int(round(dy * display.scale_y))
                     self.adb_client.tap(current_x, current_y)
                     time.sleep(0.2)
             elif numbers and action == "click":
@@ -5549,10 +5651,8 @@ def build_ui(root, bot):
         backend_code = backend_choices[selected_index if selected_index >= 0 else 0][0]
         bot.set_input_backend(backend_code, serial=adb_serial_var.get())
         if backend_code == 'adb' and check_connection:
-            connected = bot.check_adb_connection(notify=True)
-            backend_status_var.set(
-                bot.tr('adb_connected' if connected else 'adb_disconnected', serial=bot.adb_serial)
-            )
+            connected = bot.check_runtime_environment(notify=True)
+            backend_status_var.set(bot.get_environment_summary())
         else:
             backend_status_var.set(bot.tr('input_screen') if backend_code == 'screen' else bot.adb_serial)
 
