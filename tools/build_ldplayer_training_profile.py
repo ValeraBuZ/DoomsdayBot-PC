@@ -15,7 +15,11 @@ import cv2
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from doomsdaybot.routines import default_routine_tasks, upgrade_radar_runtime_metadata
+from doomsdaybot.routines import (
+    default_routine_tasks,
+    upgrade_radar_runtime_metadata,
+    upgrade_strict_runtime_metadata,
+)
 
 
 TRAINING_DIR = PROJECT_ROOT / "build" / "training"
@@ -1682,6 +1686,7 @@ def build_profile(destination):
                 completion_uid = uid
         next(task for task in tasks if task["id"] == task_id)["completion_uid"] = completion_uid
 
+    upgrade_strict_runtime_metadata(manifest["images"], tasks)
     upgrade_radar_runtime_metadata(manifest["images"], tasks)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:

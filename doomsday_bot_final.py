@@ -54,6 +54,7 @@ from doomsdaybot.routines import (
     runtime_step_is_ready,
     upgrade_radar_runtime_metadata,
     upgrade_resource_runtime_metadata,
+    upgrade_strict_runtime_metadata,
 )
 from doomsdaybot.state import BotState, compute_runtime_seconds
 from doomsdaybot.storage import move_file_to_trash, save_json_with_backup
@@ -1494,6 +1495,7 @@ class AutoClicker:
                 added += 1
 
         matching = manifest.get("matching", {})
+        upgrade_strict_runtime_metadata(self.search_images, self.routine_tasks)
         upgrade_radar_runtime_metadata(self.search_images, self.routine_tasks)
         self.scale_enabled = bool(matching.get("scale_enabled", self.scale_enabled))
         self.scale_min = float(matching.get("scale_min", self.scale_min))
@@ -1623,6 +1625,12 @@ class AutoClicker:
                     )
                     if upgraded_resources:
                         logger.info("Resource runtime sequence upgraded for %s templates", upgraded_resources)
+                    upgraded_strict = upgrade_strict_runtime_metadata(
+                        self.search_images,
+                        self.routine_tasks,
+                    )
+                    if upgraded_strict:
+                        logger.info("Strict runtime sequence upgraded for %s templates", upgraded_strict)
                     upgraded_radar = upgrade_radar_runtime_metadata(
                         self.search_images,
                         self.routine_tasks,

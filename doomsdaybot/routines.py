@@ -16,6 +16,29 @@ RESOURCE_STEP_IDS = (
     "create_squad",
     "march",
 )
+STRICT_RUNTIME_SEQUENCES = {
+    "heal": ("open_wounded", "start_healing"),
+    "train_infantry": ("queue", "building", "train"),
+    "train_riders": ("queue", "building", "train"),
+    "train_shooters": ("queue", "building", "train"),
+    "train_vehicles": ("queue", "building", "train"),
+    "zombie_hunt": (
+        "world_search",
+        "zombie_icon",
+        "search",
+        "attack",
+        "create_squad",
+        "march",
+    ),
+    "collective_mind": (
+        "world_search",
+        "leader_icon",
+        "search",
+        "rally",
+        "confirm_rally",
+        "march",
+    ),
+}
 RADAR_STEP_PRIORITIES = {
     "radar_screen_guard": 1,
     "card_guard": 1,
@@ -554,6 +577,56 @@ def upgrade_resource_runtime_metadata(images, tasks):
     for task in tasks:
         if task.get("id") in RESOURCE_TASK_IDS:
             task["timeout_seconds"] = max(30.0, float(task.get("timeout_seconds", 0.0) or 0.0))
+    return upgraded
+
+
+def upgrade_strict_runtime_metadata(images, tasks):
+    """Apply safe step ordering to healing, training and hunt routines."""
+    images_by_uid = {str(image.get("uid") or ""): image for image in images}
+    upgraded = 0
+
+    for task_id, sequence in STRICT_RUNTIME_SEQUENCES.items():
+        is_hunt = task_id in {"zombie_hunt", "collective_mind"}
+        if is_hunt:
+            region_uid = str(uuid.uuid5(PROFILE_NAMESPACE, f"{task_id}:region"))
+            world_search_uid = str(uuid.uuid5(PROFILE_NAMESPACE, f"{task_id}:world_search"))
+            region_image = images_by_uid.get(region_uid)
+            if region_image is not None:
+                region_image.update(
+                    {
+                        "action": "open_world_search",
+                        "next_template_uid": world_search_uid,
+                        "runtime_step": "world_search",
+                        "routine_priority": 9,
+                    }
+                )
+                region_image.pop("requires_runtime_steps", None)
+                upgraded += 1
+
+        previous_step = None
+        for index, step_id in enumerate(sequence):
+            uid = str(uuid.uuid5(PROFILE_NAMESPACE, f"{task_id}:{step_id}"))
+            image = images_by_uid.get(uid)
+            if image is None:
+                previous_step = step_id
+                continue
+            image["runtime_step"] = step_id
+            image["routine_priority"] = 10 + index * 10
+            image.pop("requires_runtime_steps", None)
+            selected_training_building = (
+                task_id.startswith("train_") and step_id == "building"
+            )
+            if previous_step and not selected_training_building:
+                image["requires_runtime_steps"] = [previous_step]
+            previous_step = step_id
+            upgraded += 1
+
+    for task in tasks:
+        if task.get("id") in STRICT_RUNTIME_SEQUENCES:
+            task["timeout_seconds"] = max(
+                20.0,
+                float(task.get("timeout_seconds", 0.0) or 0.0),
+            )
     return upgraded
 
 

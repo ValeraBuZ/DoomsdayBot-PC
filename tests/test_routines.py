@@ -15,6 +15,7 @@ from doomsdaybot.routines import (
     runtime_step_is_ready,
     upgrade_radar_runtime_metadata,
     upgrade_resource_runtime_metadata,
+    upgrade_strict_runtime_metadata,
 )
 
 
@@ -210,6 +211,46 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertEqual(images[0]["runtime_step"], "world_search")
         self.assertEqual(images[1]["requires_runtime_steps"], ["world_search"])
         self.assertEqual(tasks[0]["timeout_seconds"], 30.0)
+
+    def test_healing_training_and_hunts_are_upgraded_to_strict_sequences(self):
+        import uuid
+
+        namespace = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
+        training_uids = {
+            step: str(uuid.uuid5(namespace, f"train_infantry:{step}"))
+            for step in ("queue", "building", "train")
+        }
+        hunt_uids = {
+            step: str(uuid.uuid5(namespace, f"zombie_hunt:{step}"))
+            for step in ("region", "world_search", "zombie_icon", "search")
+        }
+        images = [
+            *({"uid": uid} for uid in training_uids.values()),
+            *({"uid": uid} for uid in hunt_uids.values()),
+        ]
+        tasks = [
+            {"id": "train_infantry", "timeout_seconds": 12.0},
+            {"id": "zombie_hunt", "timeout_seconds": 12.0},
+        ]
+
+        self.assertEqual(upgrade_strict_runtime_metadata(images, tasks), 7)
+        by_uid = {image["uid"]: image for image in images}
+        self.assertNotIn("requires_runtime_steps", by_uid[training_uids["building"]])
+        self.assertEqual(
+            by_uid[training_uids["train"]]["requires_runtime_steps"],
+            ["building"],
+        )
+        self.assertEqual(by_uid[hunt_uids["region"]]["action"], "open_world_search")
+        self.assertEqual(
+            by_uid[hunt_uids["region"]]["next_template_uid"],
+            hunt_uids["world_search"],
+        )
+        self.assertEqual(
+            by_uid[hunt_uids["zombie_icon"]]["requires_runtime_steps"],
+            ["world_search"],
+        )
+        self.assertEqual(tasks[0]["timeout_seconds"], 20.0)
+        self.assertEqual(tasks[1]["timeout_seconds"], 20.0)
 
     def test_radar_finishes_on_empty_screen_instead_of_action_limit(self):
         import uuid
