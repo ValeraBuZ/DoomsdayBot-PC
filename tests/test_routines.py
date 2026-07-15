@@ -9,6 +9,7 @@ from doomsdaybot.routines import (
     normalize_routine_tasks,
     pick_due_task_index,
     runtime_step_is_ready,
+    upgrade_resource_runtime_metadata,
 )
 
 
@@ -65,7 +66,7 @@ class RoutineTaskTests(unittest.TestCase):
         custom = next(task for task in tasks if task["id"] == "custom_daily")
         self.assertEqual(food["group"], "Ферма еды")
         self.assertEqual(food["interval_minutes"], 0.1)
-        self.assertEqual(food["timeout_seconds"], 10.0)
+        self.assertEqual(food["timeout_seconds"], 30.0)
         self.assertEqual(food["settings"]["resource_level"], 8)
         self.assertEqual(custom["name"], "Ежедневная награда")
 
@@ -146,6 +147,26 @@ class RoutineTaskTests(unittest.TestCase):
         }
         self.assertFalse(runtime_step_is_ready(image, {"boost_category"}))
         self.assertTrue(runtime_step_is_ready(image, {"boost_24h"}))
+
+    def test_completed_runtime_step_is_not_scanned_again(self):
+        image = {"runtime_step": "world_search"}
+        self.assertTrue(runtime_step_is_ready(image, set()))
+        self.assertFalse(runtime_step_is_ready(image, {"world_search"}))
+
+    def test_old_resource_profile_is_upgraded_to_strict_sequence(self):
+        import uuid
+
+        namespace = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
+        region_uid = str(uuid.uuid5(namespace, "wood:region"))
+        icon_uid = str(uuid.uuid5(namespace, "wood:resource_icon"))
+        images = [{"uid": region_uid}, {"uid": icon_uid}]
+        tasks = [{"id": "wood", "timeout_seconds": 10.0}]
+
+        self.assertEqual(upgrade_resource_runtime_metadata(images, tasks), 2)
+        self.assertEqual(images[0]["action"], "open_world_search")
+        self.assertEqual(images[0]["runtime_step"], "world_search")
+        self.assertEqual(images[1]["requires_runtime_steps"], ["world_search"])
+        self.assertEqual(tasks[0]["timeout_seconds"], 30.0)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,20 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import uuid
+
+
+PROFILE_NAMESPACE = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
+RESOURCE_TASK_IDS = ("food", "wood", "metal", "oil")
+RESOURCE_STEP_IDS = (
+    "region",
+    "world_search",
+    "resource_icon",
+    "search_button",
+    "gather",
+    "create_squad",
+    "march",
+)
 
 
 DEFAULT_ROUTINE_TASKS = (
@@ -27,7 +41,7 @@ DEFAULT_ROUTINE_TASKS = (
         "uses_march": False,
         "priority": 20,
         "interval_minutes": 720.0,
-        "timeout_seconds": 10.0,
+        "timeout_seconds": 30.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
         "settings": {},
@@ -234,7 +248,7 @@ DEFAULT_ROUTINE_TASKS = (
         "uses_march": True,
         "priority": 100,
         "interval_minutes": 0.1,
-        "timeout_seconds": 10.0,
+        "timeout_seconds": 30.0,
         "march_duration_minutes": 240.0,
         "completion_uid": "",
         "settings": {"resource_level": 7},
@@ -248,7 +262,7 @@ DEFAULT_ROUTINE_TASKS = (
         "uses_march": True,
         "priority": 100,
         "interval_minutes": 0.1,
-        "timeout_seconds": 10.0,
+        "timeout_seconds": 30.0,
         "march_duration_minutes": 240.0,
         "completion_uid": "",
         "settings": {"resource_level": 7},
@@ -262,7 +276,7 @@ DEFAULT_ROUTINE_TASKS = (
         "uses_march": True,
         "priority": 100,
         "interval_minutes": 0.1,
-        "timeout_seconds": 10.0,
+        "timeout_seconds": 30.0,
         "march_duration_minutes": 240.0,
         "completion_uid": "",
         "settings": {"resource_level": 7},
@@ -346,16 +360,50 @@ def task_setting_specs(task_id):
 
 def runtime_step_is_ready(image, completed_steps):
     """Return whether an image's prerequisite runtime steps were completed."""
+    completed = {str(step) for step in completed_steps}
+    own_step = str(image.get("runtime_step") or "")
+    if own_step and own_step in completed and not image.get("repeat_runtime_step", False):
+        return False
     required = image.get("requires_runtime_steps", ())
     if isinstance(required, str):
         required = (required,)
     required = tuple(str(step) for step in required if str(step))
     if not required:
         return True
-    completed = {str(step) for step in completed_steps}
     if image.get("runtime_step_mode") == "any":
         return any(step in completed for step in required)
     return all(step in completed for step in required)
+
+
+def upgrade_resource_runtime_metadata(images, tasks):
+    """Apply the current resource sequence to both fresh and older profiles."""
+    images_by_uid = {str(image.get("uid") or ""): image for image in images}
+    upgraded = 0
+    for task_id in RESOURCE_TASK_IDS:
+        previous_step = None
+        world_search_uid = str(uuid.uuid5(PROFILE_NAMESPACE, f"{task_id}:world_search"))
+        for step_id in RESOURCE_STEP_IDS:
+            uid = str(uuid.uuid5(PROFILE_NAMESPACE, f"{task_id}:{step_id}"))
+            image = images_by_uid.get(uid)
+            if image is None:
+                previous_step = "world_search" if step_id == "region" else step_id
+                continue
+            runtime_step = "world_search" if step_id == "region" else step_id
+            image["runtime_step"] = runtime_step
+            image.pop("requires_runtime_steps", None)
+            if step_id not in {"region", "world_search"} and previous_step:
+                image["requires_runtime_steps"] = [previous_step]
+            if step_id == "region":
+                image["action"] = "open_world_search"
+                image["next_template_uid"] = world_search_uid
+                image["delay"] = 0.8
+            previous_step = runtime_step
+            upgraded += 1
+
+    for task in tasks:
+        if task.get("id") in RESOURCE_TASK_IDS:
+            task["timeout_seconds"] = max(30.0, float(task.get("timeout_seconds", 0.0) or 0.0))
+    return upgraded
 
 
 def _positive_float(value, default, minimum):

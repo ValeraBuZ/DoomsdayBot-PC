@@ -491,7 +491,7 @@ def build_profile(destination):
     for task in tasks:
         if task["id"] in RESOURCE_DATA:
             task["enabled"] = True
-            task["timeout_seconds"] = 10.0
+            task["timeout_seconds"] = 30.0
             task["march_duration_minutes"] = 240.0
         elif task["id"] == "prize_hunt":
             task["enabled"] = False
@@ -499,7 +499,7 @@ def build_profile(destination):
     manifest = {
         "format": "doomsday-training-profile",
         "format_version": 1,
-        "app_version": "3.1.3",
+        "app_version": "3.1.4",
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "source_screen": {"width": 1280, "height": 720},
         "routine_tasks": tasks,
@@ -921,6 +921,19 @@ def build_profile(destination):
                 raise OSError(f"Could not write {output_path}")
             delay = 2.0 if step_id == "march" else 0.8
             configured_image = image_config(uid, entry_name, group, description, offset, grayscale, delay)
+            runtime_step = "world_search" if step_id == "region" else step_id
+            configured_image["runtime_step"] = runtime_step
+            step_index = next(index for index, item in enumerate(steps) if item[0] == step_id)
+            if step_id not in {"region", "world_search"}:
+                previous_id = steps[step_index - 1][0]
+                configured_image["requires_runtime_steps"] = [
+                    "world_search" if previous_id == "region" else previous_id
+                ]
+            if step_id == "region":
+                configured_image["action"] = "open_world_search"
+                configured_image["next_template_uid"] = str(
+                    uuid.uuid5(PROFILE_NAMESPACE, f"{task_id}:world_search")
+                )
             if step_id == "search_button":
                 configured_image["action"] = "resource_search"
             manifest["images"].append(configured_image)

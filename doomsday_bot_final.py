@@ -50,12 +50,13 @@ from doomsdaybot.routines import (
     normalize_routine_tasks,
     pick_due_task_index,
     runtime_step_is_ready,
+    upgrade_resource_runtime_metadata,
 )
 from doomsdaybot.state import BotState, compute_runtime_seconds
 from doomsdaybot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.1.3"
+APP_VERSION = "3.1.4"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -1608,6 +1609,13 @@ class AutoClicker:
                         if "match_method" in img:
                             del img["match_method"]
 
+                    upgraded_resources = upgrade_resource_runtime_metadata(
+                        self.search_images,
+                        self.routine_tasks,
+                    )
+                    if upgraded_resources:
+                        logger.info("Resource runtime sequence upgraded for %s templates", upgraded_resources)
+
                     self.stats = {img['path']: 0 for img in self.search_images}
                     logger.info(f"Загружено {len(self.search_images)} областей из конфига")
 
@@ -2736,6 +2744,49 @@ class AutoClicker:
         action = img_config.get("action", "click")
         numbers = self._resolve_action_numbers(img_config)
         click_seq = img_config.get("click_sequence", [])
+
+        if action == "open_world_search":
+            if self.uses_adb:
+                self.adb_client.tap(int(round(target_x)), int(round(target_y)))
+            else:
+                pyautogui.click(target_x, target_y)
+            self._invalidate_capture()
+            self.set_status_message("\u041e\u0436\u0438\u0434\u0430\u043d\u0438\u0435 \u043a\u043d\u043e\u043f\u043a\u0438 \u043f\u043e\u0438\u0441\u043a\u0430 \u0432 \u0440\u0435\u0433\u0438\u043e\u043d\u0435", force=True)
+            search_image = next(
+                (
+                    image for image in self.search_images
+                    if image.get("uid") == img_config.get("next_template_uid")
+                ),
+                None,
+            )
+            search_location = None
+            deadline = time.monotonic() + 6.0
+            while search_image and time.monotonic() < deadline and not self.stop_event.is_set():
+                self._interruptible_sleep(0.5)
+                search_location, search_bbox, _score = self._locate_image(search_image)
+                if search_location and search_bbox:
+                    valid, _reason = self._validate_detected_match(search_image, search_bbox)
+                    if valid:
+                        break
+                    search_location = None
+            if search_location:
+                search_x = int(round(search_location.x))
+                search_y = int(round(search_location.y))
+                source = "template"
+            else:
+                search_x = int(round(43 * display.scale_x))
+                search_y = int(round(447 * display.scale_y))
+                source = "fallback"
+            if self.uses_adb:
+                self.adb_client.tap(search_x, search_y)
+            else:
+                pyautogui.click(search_x, search_y)
+            self._invalidate_capture()
+            img_config["last_used"] = time.time()
+            logger.info("World search opened at (%s, %s), source=%s", search_x, search_y, source)
+            self.set_status_message("\u041f\u043e\u0438\u0441\u043a \u0440\u0435\u0441\u0443\u0440\u0441\u043e\u0432 \u043e\u0442\u043a\u0440\u044b\u0442", force=True)
+            self._interruptible_sleep(img_config.get("delay", self.sleep_found))
+            return
 
         if action == "resource_search":
             level = min(8, max(1, int(self._current_task_settings().get("resource_level", 7))))
