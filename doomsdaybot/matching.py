@@ -1,8 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
+import numpy as np
+
+
+def imread_unicode(image_path, flags=cv2.IMREAD_COLOR):
+    """Read images reliably from Windows paths containing non-ASCII characters."""
+    try:
+        encoded = np.fromfile(Path(image_path), dtype=np.uint8)
+    except (OSError, ValueError):
+        return None
+    if encoded.size == 0:
+        return None
+    return cv2.imdecode(encoded, flags)
 
 
 @dataclass
@@ -30,12 +43,12 @@ class TemplateCache:
 
     def get_color(self, template_path):
         if template_path not in self._color:
-            self._color[template_path] = cv2.imread(template_path)
+            self._color[template_path] = imread_unicode(template_path)
         return self._color[template_path]
 
     def get_gray(self, template_path):
         if template_path not in self._gray:
-            self._gray[template_path] = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
+            self._gray[template_path] = imread_unicode(template_path, cv2.IMREAD_GRAYSCALE)
         return self._gray[template_path]
 
     def get_size(self, template_path):

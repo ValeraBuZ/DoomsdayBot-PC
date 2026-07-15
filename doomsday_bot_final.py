@@ -54,7 +54,7 @@ from doomsdaybot.state import BotState, compute_runtime_seconds
 from doomsdaybot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.1.1"
+APP_VERSION = "3.1.2"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -1518,10 +1518,8 @@ class AutoClicker:
                     self.stats = {img['path']: 0 for img in self.search_images}
                     logger.info(f"Загружено {len(self.search_images)} областей из конфига")
 
-                    for img in self.search_images:
-                        group = img.get("group")
-                        if group:
-                            self._move_image_to_group(img, group)
+                    # The configured path is authoritative. Moving files on every
+                    # startup breaks stable task folders and non-ASCII Windows paths.
                     self.save_config()
 
             except Exception as e:
