@@ -567,6 +567,17 @@ def no_action_retry_delay(task):
     return max(30.0, min(300.0, interval_seconds))
 
 
+def no_available_squad_wait_exceeded(task, completed_steps, idle_seconds, grace_seconds=8.0):
+    """Detect a squad screen that never exposes the final march button."""
+    completed = {str(step) for step in completed_steps}
+    return bool(
+        task.get("uses_march", False)
+        and "create_squad" in completed
+        and "march" not in completed
+        and float(idle_seconds) >= float(grace_seconds)
+    )
+
+
 def upgrade_resource_runtime_metadata(images, tasks):
     """Apply the current resource sequence to both fresh and older profiles."""
     images_by_uid = {str(image.get("uid") or ""): image for image in images}
@@ -588,6 +599,10 @@ def upgrade_resource_runtime_metadata(images, tasks):
             image.pop("requires_runtime_steps", None)
             if step_id not in {"region", "world_search"} and previous_step:
                 image["requires_runtime_steps"] = [previous_step]
+            if step_id == "search_button":
+                # A selected resource icon has a different appearance, so the
+                # visible search button is also a safe resume point.
+                image["requires_runtime_steps"] = ["world_search"]
             if step_id == "region":
                 image["action"] = "open_world_search"
                 image["next_template_uid"] = world_search_uid

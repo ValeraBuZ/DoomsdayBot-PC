@@ -11,6 +11,7 @@ from doomsdaybot.routines import (
     next_run_after_finish,
     next_fixed_utc_run,
     no_action_retry_delay,
+    no_available_squad_wait_exceeded,
     normalize_routine_tasks,
     pick_due_task_index,
     runtime_step_is_ready,
@@ -104,6 +105,15 @@ class RoutineTaskTests(unittest.TestCase):
         index = pick_due_task_index(tasks, {}, start_index=wood_index, now=100.0, active_marches=0, max_marches=5)
         self.assertEqual(tasks[index]["id"], "wood")
 
+    def test_only_checked_task_is_scheduled(self):
+        tasks = default_routine_tasks()
+        for task in tasks:
+            task["enabled"] = task["id"] == "metal"
+        index = pick_due_task_index(tasks, {}, start_index=0, now=100.0, active_marches=0, max_marches=5)
+        self.assertEqual(tasks[index]["id"], "metal")
+        next_task, _wait = next_due_task(tasks, {}, now=100.0, active_marches=0, max_marches=5)
+        self.assertEqual(next_task["id"], "metal")
+
     def test_enabled_prize_hunt_precedes_regular_resources(self):
         tasks = default_routine_tasks()
         prize = next(task for task in tasks if task["id"] == "prize_hunt")
@@ -175,6 +185,12 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertEqual(no_action_retry_delay({"interval_minutes": 2.0}), 120.0)
         self.assertEqual(no_action_retry_delay({"interval_minutes": 60.0}), 300.0)
 
+    def test_missing_march_button_defers_after_squad_screen_grace(self):
+        task = {"uses_march": True}
+        self.assertFalse(no_available_squad_wait_exceeded(task, {"create_squad"}, 7.9))
+        self.assertTrue(no_available_squad_wait_exceeded(task, {"create_squad"}, 8.0))
+        self.assertFalse(no_available_squad_wait_exceeded(task, {"create_squad", "march"}, 20.0))
+
     def test_system_template_can_be_disabled_for_one_routine(self):
         image = {"disabled_routine_ids": ["radar"]}
         self.assertFalse(image_is_allowed_for_routine(image, "radar"))
@@ -214,13 +230,15 @@ class RoutineTaskTests(unittest.TestCase):
         namespace = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
         region_uid = str(uuid.uuid5(namespace, "wood:region"))
         icon_uid = str(uuid.uuid5(namespace, "wood:resource_icon"))
-        images = [{"uid": region_uid}, {"uid": icon_uid}]
+        search_uid = str(uuid.uuid5(namespace, "wood:search_button"))
+        images = [{"uid": region_uid}, {"uid": icon_uid}, {"uid": search_uid}]
         tasks = [{"id": "wood", "timeout_seconds": 10.0}]
 
-        self.assertEqual(upgrade_resource_runtime_metadata(images, tasks), 2)
+        self.assertEqual(upgrade_resource_runtime_metadata(images, tasks), 3)
         self.assertEqual(images[0]["action"], "open_world_search")
         self.assertEqual(images[0]["runtime_step"], "world_search")
         self.assertEqual(images[1]["requires_runtime_steps"], ["world_search"])
+        self.assertEqual(images[2]["requires_runtime_steps"], ["world_search"])
         self.assertTrue(images[1]["allow_runtime_resume"])
         self.assertTrue(runtime_step_is_ready(images[1], set()))
         self.assertEqual(tasks[0]["timeout_seconds"], 30.0)

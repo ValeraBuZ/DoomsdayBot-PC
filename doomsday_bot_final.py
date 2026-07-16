@@ -50,6 +50,7 @@ from doomsdaybot.routines import (
     next_due_task,
     next_run_after_finish,
     no_action_retry_delay,
+    no_available_squad_wait_exceeded,
     normalize_routine_tasks,
     pick_due_task_index,
     runtime_step_is_ready,
@@ -568,6 +569,7 @@ class AutoClicker:
         self.routine_tasks = default_routine_tasks()
         self.routine_max_marches = 5
         self.routine_march_deadlines = []
+        self.routine_deployment_blocked_until = 0.0
         self.routine_next_run = {}
         self.current_routine_index = 0
         self.current_routine_task_id = None
@@ -2093,6 +2095,9 @@ class AutoClicker:
                 self.account_session_deadline = now + 60.0
 
         active_marches = self.get_active_marches(now)
+        deployment_wait = max(0.0, self.routine_deployment_blocked_until - now)
+        if deployment_wait > 0:
+            active_marches = self.routine_max_marches
         runtime_tasks = self._scheduler_routine_tasks()
         index = pick_due_task_index(
             runtime_tasks,
@@ -2111,10 +2116,16 @@ class AutoClicker:
                 max_marches=self.routine_max_marches,
             )
             if next_task is None:
-                self.set_status_message(
-                    self.tr('routine_full_marches', active=active_marches, maximum=self.routine_max_marches),
-                    force=True,
-                )
+                if deployment_wait > 0:
+                    self.set_status_message(
+                        f"Нет свободных отрядов: повторная проверка через {max(1, int(deployment_wait + 0.999))} сек",
+                        force=True,
+                    )
+                else:
+                    self.set_status_message(
+                        self.tr('routine_full_marches', active=active_marches, maximum=self.routine_max_marches),
+                        force=True,
+                    )
             else:
                 self.set_status_message(
                     self.tr(
@@ -2234,6 +2245,7 @@ class AutoClicker:
             and (completion_clicked or not completion_uid)
         )
         if should_count_march:
+            self.routine_deployment_blocked_until = 0.0
             self._register_routine_march(task, now)
 
         if task.get("id") in {
@@ -2296,6 +2308,34 @@ class AutoClicker:
         self.routine_completed_steps = set()
         self.routine_idle_confirmation_count = 0
 
+    def _defer_current_routine_no_squad(self, now=None):
+        now = time.time() if now is None else float(now)
+        task = self.get_routine_task(self.current_routine_task_id)
+        if not task:
+            self.current_routine_task_id = None
+            return
+
+        retry_delay = 60.0
+        self.routine_deployment_blocked_until = now + retry_delay
+        self.routine_next_run[task["id"]] = now + retry_delay
+        logger.warning(
+            "Routine %s reached the squad screen without an available squad; retrying in %.0f seconds",
+            task.get("id"),
+            retry_delay,
+        )
+        self._return_to_main_screen(max_back_steps=3)
+        self.set_status_message(
+            "Нет свободных отрядов. Походы будут проверены снова через 60 сек",
+            force=True,
+        )
+        self.current_routine_index = (self.current_routine_index + 1) % len(self.routine_tasks)
+        self.current_routine_task_id = None
+        self.routine_current_had_action = False
+        self.routine_current_action_count = 0
+        self.routine_action_counts = {}
+        self.routine_completed_steps = set()
+        self.routine_idle_confirmation_count = 0
+
     def start_normal(self):
         self.routine_mode = False
         self.current_routine_task_id = None
@@ -2303,11 +2343,16 @@ class AutoClicker:
 
     def start_routines(self):
         self.routine_only_task_id = None
+        # The main-screen checkboxes are authoritative. Rebuild group states
+        # before every run so an older profile cannot silently override them.
+        for task in self.routine_tasks:
+            group = effective_task_group(task)
+            if group:
+                self.groups[group] = bool(is_task_effectively_enabled(task))
         enabled_tasks = [
             task for task in self.routine_tasks
             if is_task_effectively_enabled(task)
             and not task.get("standalone", False)
-            and self.groups.get(effective_task_group(task), True)
         ]
         if not enabled_tasks:
             self._show_notification('warning', 'routine_no_enabled')
@@ -2324,6 +2369,10 @@ class AutoClicker:
         self.current_routine_task_id = None
         self.routine_last_action_time = time.time()
         self.routine_current_had_action = False
+        logger.info(
+            "Запуск выбранных задач: %s",
+            ", ".join(task.get("id", "") for task in enabled_tasks),
+        )
         current_account = self.get_current_account()
         if current_account:
             self.account_session_deadline = time.time() + float(current_account.get("session_minutes", 30.0)) * 60.0
@@ -2847,6 +2896,13 @@ class AutoClicker:
                         continue
                     idle = time.time() - self.routine_last_action_time
                     timeout = float(current_routine_task.get("timeout_seconds", 8.0))
+                    if not action_occurred and no_available_squad_wait_exceeded(
+                        current_routine_task,
+                        self.routine_completed_steps,
+                        idle,
+                    ):
+                        self._defer_current_routine_no_squad(time.time())
+                        continue
                     if not action_occurred and idle >= timeout:
                         if self._routine_idle_completion_ready(current_routine_task) or (
                             self.routine_current_had_action
@@ -2996,6 +3052,21 @@ class AutoClicker:
 
         if action == "resource_search":
             level = min(8, max(1, int(self._current_task_settings().get("resource_level", 7))))
+            resource_tabs = {
+                "food": 550,
+                "wood": 715,
+                "metal": 880,
+                "oil": 1045,
+            }
+            resource_x = resource_tabs.get(str(self.current_routine_task_id or ""))
+            if resource_x is not None:
+                resource_x = int(round(resource_x * display.scale_x))
+                resource_y = int(round(608 * display.scale_y))
+                if self.uses_adb:
+                    self.adb_client.tap(resource_x, resource_y)
+                else:
+                    pyautogui.click(resource_x, resource_y)
+                time.sleep(0.35)
             minus_x = int(round(target_x - 146 * display.scale_x))
             minus_y = int(round(target_y - 76 * display.scale_y))
             plus_x = int(round(target_x + 144 * display.scale_x))
