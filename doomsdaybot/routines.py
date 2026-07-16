@@ -529,13 +529,31 @@ def runtime_step_is_ready(image, completed_steps):
     required = tuple(str(step) for step in required if str(step))
     if not required:
         return True
+    # Strict UI flows may be resumed while the game is already showing a later
+    # dialog (for example, the squad screen after a slow map transition).
+    if not completed and image.get("allow_runtime_resume", False):
+        return True
     if image.get("runtime_step_mode") == "any":
         return any(step in completed for step in required)
     return all(step in completed for step in required)
 
 
-def image_is_allowed_for_routine(image, task_id):
+def completed_runtime_steps_for_image(image):
+    """Return the current step and any predecessors implied by its screen."""
+    implied = image.get("implied_runtime_steps", ())
+    if isinstance(implied, str):
+        implied = (implied,)
+    completed = {str(step) for step in implied if str(step)}
+    own_step = str(image.get("runtime_step") or "")
+    if own_step:
+        completed.add(own_step)
+    return completed
+
+
+def image_is_allowed_for_routine(image, task_id, routine_started=False):
     """Return whether a shared system template may run in this routine."""
+    if routine_started and image.get("startup_only", False):
+        return False
     disabled = image.get("disabled_routine_ids", ())
     if isinstance(disabled, str):
         disabled = (disabled,)
@@ -555,6 +573,7 @@ def upgrade_resource_runtime_metadata(images, tasks):
     upgraded = 0
     for task_id in RESOURCE_TASK_IDS:
         previous_step = None
+        prior_runtime_steps = []
         world_search_uid = str(uuid.uuid5(PROFILE_NAMESPACE, f"{task_id}:world_search"))
         for step_id in RESOURCE_STEP_IDS:
             uid = str(uuid.uuid5(PROFILE_NAMESPACE, f"{task_id}:{step_id}"))
@@ -564,6 +583,8 @@ def upgrade_resource_runtime_metadata(images, tasks):
                 continue
             runtime_step = "world_search" if step_id == "region" else step_id
             image["runtime_step"] = runtime_step
+            image["allow_runtime_resume"] = True
+            image["implied_runtime_steps"] = list(dict.fromkeys(prior_runtime_steps))
             image.pop("requires_runtime_steps", None)
             if step_id not in {"region", "world_search"} and previous_step:
                 image["requires_runtime_steps"] = [previous_step]
@@ -572,6 +593,7 @@ def upgrade_resource_runtime_metadata(images, tasks):
                 image["next_template_uid"] = world_search_uid
                 image["delay"] = 0.8
             previous_step = runtime_step
+            prior_runtime_steps.append(runtime_step)
             upgraded += 1
 
     for task in tasks:
@@ -612,6 +634,8 @@ def upgrade_strict_runtime_metadata(images, tasks):
                 continue
             image["runtime_step"] = step_id
             image["routine_priority"] = 10 + index * 10
+            image["allow_runtime_resume"] = True
+            image["implied_runtime_steps"] = list(sequence[:index])
             image.pop("requires_runtime_steps", None)
             selected_training_building = (
                 task_id.startswith("train_") and step_id == "building"

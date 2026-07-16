@@ -42,6 +42,7 @@ from doomsdaybot.ldplayer import (
 from doomsdaybot.logging_utils import configure_logging, install_exception_logging
 from doomsdaybot.matching import TemplateCache
 from doomsdaybot.routines import (
+    completed_runtime_steps_for_image,
     default_routine_tasks,
     effective_task_group,
     image_is_allowed_for_routine,
@@ -2596,7 +2597,14 @@ class AutoClicker:
                         if (
                             img.get("group") == SYSTEM_TEMPLATE_GROUP
                             and self._is_active(img)
-                            and image_is_allowed_for_routine(img, current_routine_task.get("id"))
+                            and image_is_allowed_for_routine(
+                                img,
+                                current_routine_task.get("id"),
+                                routine_started=bool(
+                                    self.routine_current_had_action
+                                    or self.routine_completed_steps
+                                ),
+                            )
                         )
                     ]
                     active_images = [
@@ -2765,12 +2773,28 @@ class AutoClicker:
                                     self.routine_idle_confirmation_count = 0
                                     runtime_step = str(img_config.get("runtime_step") or "")
                                     if runtime_step:
-                                        self.routine_completed_steps.add(runtime_step)
+                                        self.routine_completed_steps.update(
+                                            completed_runtime_steps_for_image(img_config)
+                                        )
                                         logger.info(
                                             "Шаг сценария подтверждён: %s | выполнено=%s",
                                             runtime_step,
                                             sorted(self.routine_completed_steps),
                                         )
+                                    complete_if_false = str(
+                                        img_config.get("complete_if_setting_false") or ""
+                                    )
+                                    if (
+                                        complete_if_false
+                                        and not bool(
+                                            current_routine_task.get("settings", {}).get(
+                                                complete_if_false,
+                                                False,
+                                            )
+                                        )
+                                    ):
+                                        self._finish_current_routine(self.routine_last_action_time)
+                                        refresh_after_action = True
                                     limit_key = str(img_config.get("limit_key") or "")
                                     if limit_key:
                                         self.routine_current_action_count += 1
@@ -2909,6 +2933,23 @@ class AutoClicker:
         action = img_config.get("action", "click")
         numbers = self._resolve_action_numbers(img_config)
         click_seq = img_config.get("click_sequence", [])
+
+        if action == "select_training_queue":
+            clear_x = int(round(300 * display.scale_x))
+            clear_y = int(round(400 * display.scale_y))
+            if self.uses_adb:
+                self.adb_client.tap(clear_x, clear_y)
+                time.sleep(0.35)
+                self.adb_client.tap(int(round(target_x)), int(round(target_y)))
+            else:
+                pyautogui.click(clear_x, clear_y)
+                time.sleep(0.35)
+                pyautogui.click(target_x, target_y)
+            self._invalidate_capture()
+            img_config["last_used"] = time.time()
+            self.set_status_message("Выбрано следующее учебное здание", force=True)
+            self._interruptible_sleep(img_config.get("delay", self.sleep_found))
+            return
 
         if action == "open_world_search":
             if self.uses_adb:

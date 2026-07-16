@@ -88,8 +88,8 @@ SYSTEM_STEPS = (
         "glory_league_close",
         "Закрыть стартовый баннер",
         "Phoenix675_after_resume_confirm.png",
-        (1121, 80, 1181, 141),
-        (0, 0),
+        (430, 300, 820, 390),
+        (520, -235),
         False,
     ),
     (
@@ -423,7 +423,8 @@ DAILY_TASK_STEPS = {
             "open_vip",
             "Открыть VIP",
             "base_live_now.png",
-            (96, 40, 160, 77),
+            # Exclude the account-specific VIP level number from the template.
+            (96, 40, 136, 77),
             (0, 0),
             False,
         ),
@@ -934,12 +935,19 @@ TRAINING_DATA = {
         "title_box": (526, 193, 690, 228),
         "train_target": (758, 487),
         "screen_source": "shooters_train.png",
+        "alternate_selections": (
+            ("zZuB1_shooter_radial.png", (526, 193, 690, 228), (758, 487)),
+            ("training_radial_generic.png", (526, 193, 690, 228), (758, 487)),
+        ),
     },
     "train_vehicles": {
         "selection_source": "vehicle_radial.png",
         "title_box": (522, 193, 690, 228),
-        "train_target": (800, 441),
+        "train_target": (780, 465),
         "screen_source": "vehicles_train.png",
+        "alternate_selections": (
+            ("zZuB1_vehicle_radial.png", (526, 193, 690, 228), (758, 487)),
+        ),
     },
 }
 
@@ -956,7 +964,7 @@ RESEARCH_STEPS = {
 
 GATHERING_BOOST_STEPS = {
     "open_bag": ("base_live_now.png", (837, 601, 919, 707)),
-    "boost_category": ("bag.png", (0, 187, 165, 267)),
+    "boost_category": ("bag.png", (0, 267, 165, 347)),
     "boost_8h": ("boosts.png", (606, 123, 725, 246)),
     "boost_24h": ("boosts.png", (746, 123, 858, 246)),
     "use": ("boost_gather_selected.png", (943, 633, 1208, 681)),
@@ -965,17 +973,17 @@ GATHERING_BOOST_STEPS = {
 ZOMBIE_STEPS = (
     ("region", "Открыть регион", "Phoenix675_base_stable.png", (9, 590, 121, 718), (0, 0), False),
     ("world_search", "Открыть поиск", "Phoenix675_region_stable.png", (9, 413, 77, 480), (0, 0), False),
-    ("zombie_icon", "Выбрать поиск зомби", "zombie_search_panel.png", (145, 535, 270, 670), (0, 0), False),
+    ("zombie_icon", "Выбрать поиск зомби", "zombie_search_panel.png", (180, 540, 240, 630), (0, 0), False),
     ("search", "Найти зомби заданного уровня", "zombie_search_panel.png", (126, 443, 307, 489), (0, 0), False),
     ("attack", "Атаковать найденных зомби", "zombie_actions.png", (868, 539, 1064, 583), (0, 0), False),
     ("create_squad", "Создать отряд для охоты", "radar_zombie_attack.png", (880, 187, 1061, 268), (0, 0), False),
-    ("march", "Отправить отряд на зомби", "zombie_queue_full.png", (881, 220, 1061, 267), (0, 0), False),
+    ("march", "Отправить отряд на зомби", "hivemind_squad.png", (839, 620, 1062, 667), (0, 0), False),
 )
 
 HIVEMIND_STEPS = (
     ("region", "Открыть регион", "Phoenix675_base_stable.png", (9, 590, 121, 718), (0, 0), False),
     ("world_search", "Открыть поиск", "Phoenix675_region_stable.png", (9, 413, 77, 480), (0, 0), False),
-    ("leader_icon", "Выбрать коллективный разум", "leader_search_panel.png", (320, 535, 445, 670), (0, 0), False),
+    ("leader_icon", "Выбрать коллективный разум", "leader_search_panel.png", (350, 565, 415, 640), (0, 0), False),
     ("search", "Найти коллективный разум", "leader_search_panel.png", (291, 443, 475, 489), (0, 0), False),
     ("rally", "Создать сбор на коллективный разум", "hivemind_actions.png", (990, 519, 1169, 565), (0, 0), False),
     ("confirm_rally", "Подтвердить сбор на 5 минут", "hivemind_rally_setup_free.png", (814, 257, 992, 304), (0, 0), False),
@@ -988,7 +996,7 @@ PRIZE_HUNT_STEPS = (
     ("enter", "Войти в охоту за призом", "prize_hunt_menu.png", (465, 500, 811, 584), (0, 0), False),
     ("prepare", "Заполнить отряд для охоты", "prize_hunt_ready.png", (861, 619, 1063, 667), (0, 0), False),
     ("deploy", "Отправить отряд на охоту", "prize_hunt_manual_fill.png", (862, 619, 1063, 667), (0, 0), False),
-    ("safe_exit", "Выйти после поражения без возрождения", "prize_hunt_match_state.png", (466, 344, 565, 487), (0, 0), False),
+    ("safe_exit", "Выйти после поражения без возрождения", "prize_hunt_result_after_exit.png", (615, 581, 871, 652), (0, 0), False),
     ("again", "Повторить охоту", "prize_hunt_result_after_exit.png", (934, 581, 1192, 652), (0, 0), False),
     ("match", "Начать повторный подбор", "prize_hunt_again.png", (465, 500, 811, 584), (0, 0), False),
     ("confirm", "Подтвердить повторный подбор", "prize_hunt_repeat_result.png", (651, 485, 917, 534), (0, 0), False),
@@ -1090,6 +1098,7 @@ def build_profile(destination):
         system_image["allow_repeat"] = True
         system_image["block_seconds"] = 3.0
         if step_id == "glory_league_close":
+            system_image["startup_only"] = True
             system_image["disabled_routine_ids"] = ["radar", "mail_rewards", "completed_tasks"]
         manifest["images"].append(system_image)
         payloads.append((output_path, entry_name))
@@ -1357,6 +1366,10 @@ def build_profile(destination):
                 configured_image["block_seconds"] = 1.0
             if task_id == "heal" and step_id == "start_healing":
                 configured_image["action"] = "heal_troops"
+            if task_id in {"zombie_hunt", "collective_mind"}:
+                # Hunt dialog buttons are small text crops and may contain fewer
+                # than ten ORB points even on a perfect match.
+                configured_image["orb_match_threshold"] = 3
             manifest["images"].append(configured_image)
             payloads.append((output_path, entry_name))
             if task_id not in {"alliance_donations", "radar", "mail_rewards", "completed_tasks"}:
@@ -1387,8 +1400,10 @@ def build_profile(destination):
         )
         queue_image.update(
             {
+                "action": "select_training_queue",
                 "allow_repeat": True,
                 "block_seconds": 0.7,
+                "repeat_runtime_step": True,
                 "skip_if_uid_visible": guard_uid,
             }
         )
@@ -1419,9 +1434,51 @@ def build_profile(destination):
         payloads.append((guard_output, guard_entry))
         print(f"{task_id:15s} {'building':15s} score={score:.3f} size={crop.shape[1]}x{crop.shape[0]}")
 
+        for alternate_index, alternate_selection in enumerate(
+            training.get("alternate_selections", ()),
+            start=1,
+        ):
+            source_name, alternate_box, alternate_target = alternate_selection
+            alternate_uid = str(
+                uuid.uuid5(PROFILE_NAMESPACE, f"{task_id}:building_alternate_{alternate_index}")
+            )
+            alternate_entry = f"templates/{alternate_uid}.png"
+            source, crop = crop_image(source_name, alternate_box)
+            score = verify_crop(source, crop, False)
+            alternate_output = staging / f"{task_id}_building_alternate_{alternate_index}.png"
+            if not cv2.imwrite(str(alternate_output), crop):
+                raise OSError(f"Could not write {alternate_output}")
+            left, top, right, bottom = alternate_box
+            center = ((left + right) // 2, (top + bottom) // 2)
+            target_x, target_y = alternate_target
+            alternate_image = image_config(
+                alternate_uid,
+                alternate_entry,
+                group,
+                "Открыть обучение нужного типа войск (младшая казарма)",
+                (target_x - center[0], target_y - center[1]),
+                False,
+                0.8,
+            )
+            alternate_image.update(
+                {
+                    "runtime_step": "building",
+                    "routine_priority": 5 + alternate_index,
+                    "allow_runtime_resume": True,
+                    "implied_runtime_steps": ["queue"],
+                }
+            )
+            manifest["images"].append(alternate_image)
+            payloads.append((alternate_output, alternate_entry))
+            print(
+                f"{task_id:15s} {f'building_alt_{alternate_index}':15s} score={score:.3f} "
+                f"size={crop.shape[1]}x{crop.shape[0]}"
+            )
+
         final_uid = str(uuid.uuid5(PROFILE_NAMESPACE, f"{task_id}:train"))
         final_entry = f"templates/{final_uid}.png"
-        source, crop = crop_image(training["screen_source"], (938, 603, 1188, 649))
+        final_box = (430, 42, 850, 83)
+        source, crop = crop_image(training["screen_source"], final_box)
         score = verify_crop(source, crop, False)
         final_output = staging / f"{task_id}_train.png"
         if not cv2.imwrite(str(final_output), crop):
@@ -1431,7 +1488,7 @@ def build_profile(destination):
             final_entry,
             group,
             "Выбрать максимальный уровень и начать обучение",
-            (0, 0),
+            (423, 564),
             False,
             1.5,
         )
@@ -1592,8 +1649,13 @@ def build_profile(destination):
         configured_image = image_config(
             uid, entry_name, zombie_task["group"], description, offset, grayscale, 0.8
         )
+        configured_image["orb_match_threshold"] = 3
         if step_id == "search":
             configured_image["action"] = "zombie_search"
+        if step_id == "world_search":
+            configured_image["confidence"] = 0.82
+        if step_id == "zombie_icon":
+            configured_image["confidence"] = 0.78
         if step_id == "march":
             configured_image["limit_key"] = "max_attacks"
             zombie_completion_uid = uid
@@ -1615,8 +1677,11 @@ def build_profile(destination):
         configured_image = image_config(
             uid, entry_name, hivemind_task["group"], description, offset, grayscale, 0.8
         )
+        configured_image["orb_match_threshold"] = 3
         if step_id == "search":
             configured_image["action"] = "hivemind_search"
+        if step_id == "world_search":
+            configured_image["confidence"] = 0.82
         if step_id == "march":
             hivemind_completion_uid = uid
         manifest["images"].append(configured_image)
@@ -1636,10 +1701,16 @@ def build_profile(destination):
         configured_image = image_config(
             uid, entry_name, prize_task["group"], description, offset, grayscale, 0.8
         )
+        configured_image["orb_match_threshold"] = 3
         configured_image["allow_repeat"] = True
         configured_image["block_seconds"] = 1.5
         if step_id == "prepare":
             configured_image["action"] = "prize_prepare"
+        if step_id in {"again", "match", "confirm"}:
+            configured_image["required_setting_key"] = "repeat_until_stopped"
+            configured_image["required_setting_value"] = True
+        if step_id == "safe_exit":
+            configured_image["complete_if_setting_false"] = "repeat_until_stopped"
         manifest["images"].append(configured_image)
         payloads.append((output_path, entry_name))
         print(f"{'prize_hunt':15s} {step_id:15s} score={score:.3f} size={crop.shape[1]}x{crop.shape[0]}")
@@ -1664,6 +1735,8 @@ def build_profile(destination):
                 raise OSError(f"Could not write {output_path}")
             delay = 2.0 if step_id == "march" else 0.8
             configured_image = image_config(uid, entry_name, group, description, offset, grayscale, delay)
+            if step_id == "world_search":
+                configured_image["confidence"] = 0.82
             runtime_step = "world_search" if step_id == "region" else step_id
             configured_image["runtime_step"] = runtime_step
             step_index = next(index for index, item in enumerate(steps) if item[0] == step_id)

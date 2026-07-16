@@ -2,6 +2,7 @@ import unittest
 from datetime import datetime, timezone
 
 from doomsdaybot.routines import (
+    completed_runtime_steps_for_image,
     default_routine_tasks,
     effective_task_group,
     image_is_allowed_for_routine,
@@ -179,6 +180,16 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertFalse(image_is_allowed_for_routine(image, "radar"))
         self.assertTrue(image_is_allowed_for_routine(image, "oil"))
 
+        startup_image = {"startup_only": True}
+        self.assertTrue(image_is_allowed_for_routine(startup_image, "vip_rewards"))
+        self.assertFalse(
+            image_is_allowed_for_routine(
+                startup_image,
+                "vip_rewards",
+                routine_started=True,
+            )
+        )
+
     def test_runtime_steps_block_unsafe_action_until_prerequisite(self):
         image = {"requires_runtime_steps": ["boost_category"]}
         self.assertFalse(runtime_step_is_ready(image, {"open_bag"}))
@@ -210,6 +221,8 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertEqual(images[0]["action"], "open_world_search")
         self.assertEqual(images[0]["runtime_step"], "world_search")
         self.assertEqual(images[1]["requires_runtime_steps"], ["world_search"])
+        self.assertTrue(images[1]["allow_runtime_resume"])
+        self.assertTrue(runtime_step_is_ready(images[1], set()))
         self.assertEqual(tasks[0]["timeout_seconds"], 30.0)
 
     def test_healing_training_and_hunts_are_upgraded_to_strict_sequences(self):
@@ -251,6 +264,27 @@ class RoutineTaskTests(unittest.TestCase):
         )
         self.assertEqual(tasks[0]["timeout_seconds"], 20.0)
         self.assertEqual(tasks[1]["timeout_seconds"], 20.0)
+
+    def test_strict_sequence_can_resume_from_visible_later_step(self):
+        image = {
+            "runtime_step": "create_squad",
+            "requires_runtime_steps": ["attack"],
+            "allow_runtime_resume": True,
+        }
+        self.assertTrue(runtime_step_is_ready(image, set()))
+        self.assertFalse(runtime_step_is_ready(image, {"search"}))
+        self.assertTrue(runtime_step_is_ready(image, {"attack"}))
+        image["implied_runtime_steps"] = ["world_search", "attack"]
+        self.assertEqual(
+            completed_runtime_steps_for_image(image),
+            {"world_search", "attack", "create_squad"},
+        )
+
+        regular_image = {
+            "runtime_step": "create_squad",
+            "requires_runtime_steps": ["attack"],
+        }
+        self.assertFalse(runtime_step_is_ready(regular_image, set()))
 
     def test_radar_finishes_on_empty_screen_instead_of_action_limit(self):
         import uuid
