@@ -102,6 +102,14 @@ SYSTEM_STEPS = (
         False,
     ),
     (
+        "google_play_cancel",
+        "Закрыть предложение Google Play Games",
+        "zZuB4_google_play_profile.png",
+        (159, 68, 320, 124),
+        (0, 0),
+        False,
+    ),
+    (
         "limited_trial_forward",
         "Продолжить ограниченное испытание",
         "radar_limited_trial_live.png",
@@ -1090,7 +1098,7 @@ def build_profile(destination):
     manifest = {
         "format": "doomsday-training-profile",
         "format_version": 1,
-        "app_version": "3.1.5",
+        "app_version": "3.1.6",
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "source_screen": {"width": 1280, "height": 720},
         "routine_tasks": tasks,
@@ -1116,8 +1124,10 @@ def build_profile(destination):
         system_image = image_config(uid, entry_name, SYSTEM_GROUP, description, offset, grayscale, 0.8)
         system_image["allow_repeat"] = True
         system_image["block_seconds"] = 3.0
-        if step_id in {"glory_league_close", "beast_taming_close"}:
+        if step_id in {"glory_league_close", "beast_taming_close", "google_play_cancel"}:
             system_image["startup_only"] = True
+        if step_id == "google_play_cancel":
+            system_image["delay"] = 8.0
         manifest["images"].append(system_image)
         payloads.append((output_path, entry_name))
         print(f"system {step_id:15s} score={score:.3f} size={crop.shape[1]}x{crop.shape[0]}")

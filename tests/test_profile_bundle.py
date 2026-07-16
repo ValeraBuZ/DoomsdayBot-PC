@@ -11,6 +11,7 @@ class ProfileBundleTests(unittest.TestCase):
         namespace = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
         expected = {
             str(uuid.uuid5(namespace, "system:beast_taming_close")),
+            str(uuid.uuid5(namespace, "system:google_play_cancel")),
             str(uuid.uuid5(namespace, "radar:close_region_search")),
         }
 
@@ -20,6 +21,8 @@ class ProfileBundleTests(unittest.TestCase):
             self.assertTrue(expected.issubset(images))
             for uid in expected:
                 self.assertIn(images[uid]["path"], archive.namelist())
+            google_uid = str(uuid.uuid5(namespace, "system:google_play_cancel"))
+            self.assertGreaterEqual(images[google_uid]["delay"], 8.0)
 
     def test_march_templates_require_screen_change_confirmation(self):
         profile_path = Path(__file__).resolve().parents[1] / "profiles" / "Doomsday_PC_1280x720.zip"
