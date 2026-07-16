@@ -18,6 +18,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from doomsdaybot.routines import (
     default_routine_tasks,
     upgrade_radar_runtime_metadata,
+    upgrade_resource_runtime_metadata,
     upgrade_strict_runtime_metadata,
 )
 
@@ -90,6 +91,14 @@ SYSTEM_STEPS = (
         "Phoenix675_after_resume_confirm.png",
         (430, 300, 820, 390),
         (520, -235),
+        False,
+    ),
+    (
+        "beast_taming_close",
+        "Закрыть акцию «Приручение зверей»",
+        "Phoenix675_beast_taming_popup.png",
+        (690, 108, 1142, 166),
+        (266, -60),
         False,
     ),
     (
@@ -881,6 +890,14 @@ DAILY_TASK_STEPS = {
             False,
         ),
         (
+            "close_region_search",
+            "Закрыть поиск региона после задания радара",
+            "Phoenix675_radar_region_search_stuck.png",
+            (25, 265, 410, 338),
+            (-177, -264),
+            False,
+        ),
+        (
             "return_shelter",
             "Вернуться в убежище после задания радара",
             "radar_supply_go.png",
@@ -985,6 +1002,7 @@ HIVEMIND_STEPS = (
     ("world_search", "Открыть поиск", "Phoenix675_region_stable.png", (9, 413, 77, 480), (0, 0), False),
     ("leader_icon", "Выбрать коллективный разум", "leader_search_panel.png", (350, 565, 415, 640), (0, 0), False),
     ("search", "Найти коллективный разум", "leader_search_panel.png", (291, 443, 475, 489), (0, 0), False),
+    ("no_result", "Коллективный разум выбранного уровня не найден", "FocusFarm_collective_no_result.png", (161, 113, 1120, 167), (0, 0), True),
     ("rally", "Создать сбор на коллективный разум", "hivemind_actions.png", (990, 519, 1169, 565), (0, 0), False),
     ("confirm_rally", "Подтвердить сбор на 5 минут", "hivemind_rally_setup_free.png", (814, 257, 992, 304), (0, 0), False),
     ("march", "Отправить отряд на совместную атаку", "hivemind_squad.png", (839, 620, 1062, 667), (0, 0), False),
@@ -997,6 +1015,7 @@ PRIZE_HUNT_STEPS = (
     ("prepare", "Заполнить отряд для охоты", "prize_hunt_ready.png", (861, 619, 1063, 667), (0, 0), False),
     ("deploy", "Отправить отряд на охоту", "prize_hunt_manual_fill.png", (862, 619, 1063, 667), (0, 0), False),
     ("safe_exit", "Выйти после поражения без возрождения", "prize_hunt_result_after_exit.png", (615, 581, 871, 652), (0, 0), False),
+    ("safe_exit_current", "Выйти после поражения без возрождения", "FocusFarm_prize_defeat.png", (430, 335, 598, 485), (0, 0), False),
     ("again", "Повторить охоту", "prize_hunt_result_after_exit.png", (934, 581, 1192, 652), (0, 0), False),
     ("match", "Начать повторный подбор", "prize_hunt_again.png", (465, 500, 811, 584), (0, 0), False),
     ("confirm", "Подтвердить повторный подбор", "prize_hunt_repeat_result.png", (651, 485, 917, 534), (0, 0), False),
@@ -1071,7 +1090,7 @@ def build_profile(destination):
     manifest = {
         "format": "doomsday-training-profile",
         "format_version": 1,
-        "app_version": "3.1.4",
+        "app_version": "3.1.5",
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "source_screen": {"width": 1280, "height": 720},
         "routine_tasks": tasks,
@@ -1097,9 +1116,8 @@ def build_profile(destination):
         system_image = image_config(uid, entry_name, SYSTEM_GROUP, description, offset, grayscale, 0.8)
         system_image["allow_repeat"] = True
         system_image["block_seconds"] = 3.0
-        if step_id == "glory_league_close":
+        if step_id in {"glory_league_close", "beast_taming_close"}:
             system_image["startup_only"] = True
-            system_image["disabled_routine_ids"] = ["radar", "mail_rewards", "completed_tasks"]
         manifest["images"].append(system_image)
         payloads.append((output_path, entry_name))
         print(f"system {step_id:15s} score={score:.3f} size={crop.shape[1]}x{crop.shape[0]}")
@@ -1680,6 +1698,13 @@ def build_profile(destination):
         configured_image["orb_match_threshold"] = 3
         if step_id == "search":
             configured_image["action"] = "hivemind_search"
+            configured_image["no_result_template_uid"] = str(
+                uuid.uuid5(PROFILE_NAMESPACE, "collective_mind:no_result")
+            )
+        if step_id == "no_result":
+            configured_image["enabled"] = False
+            configured_image["observer_only"] = True
+            configured_image["confidence"] = 0.72
         if step_id == "world_search":
             configured_image["confidence"] = 0.82
         if step_id == "march":
@@ -1709,7 +1734,7 @@ def build_profile(destination):
         if step_id in {"again", "match", "confirm"}:
             configured_image["required_setting_key"] = "repeat_until_stopped"
             configured_image["required_setting_value"] = True
-        if step_id == "safe_exit":
+        if step_id.startswith("safe_exit"):
             configured_image["complete_if_setting_false"] = "repeat_until_stopped"
         manifest["images"].append(configured_image)
         payloads.append((output_path, entry_name))
@@ -1759,6 +1784,7 @@ def build_profile(destination):
                 completion_uid = uid
         next(task for task in tasks if task["id"] == task_id)["completion_uid"] = completion_uid
 
+    upgrade_resource_runtime_metadata(manifest["images"], tasks)
     upgrade_strict_runtime_metadata(manifest["images"], tasks)
     upgrade_radar_runtime_metadata(manifest["images"], tasks)
     destination.parent.mkdir(parents=True, exist_ok=True)

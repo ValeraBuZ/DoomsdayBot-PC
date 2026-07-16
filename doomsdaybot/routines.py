@@ -56,6 +56,7 @@ RADAR_STEP_PRIORITIES = {
     "confirm_transport": 22,
     "create_squad": 30,
     "march": 40,
+    "close_region_search": 45,
     "return_shelter": 50,
     "task_person_gold_reward": 57,
     "task_car_generic_shape": 58,
@@ -493,13 +494,10 @@ TASK_SETTING_SPECS = {
         {"key": "squad", "label": "Номер отряда", "kind": "int", "min": 1, "max": 5},
     ),
     "zombie_hunt": (
-        {"key": "level_min", "label": "Минимальный уровень", "kind": "int", "min": 1, "max": 50},
-        {"key": "level_max", "label": "Максимальный уровень", "kind": "int", "min": 1, "max": 50},
         {"key": "stamina_reserve", "label": "Оставлять выносливости", "kind": "int", "min": 0, "max": 10000},
         {"key": "max_attacks", "label": "Максимум атак (0 = без лимита)", "kind": "int", "min": 0, "max": 1000},
     ),
     "collective_mind": (
-        {"key": "level", "label": "Уровень коллективного разума", "kind": "int", "min": 1, "max": 5},
         {"key": "repeat", "label": "Повторять сбор", "kind": "bool"},
     ),
     "food": ({"key": "resource_level", "label": "Уровень клетки", "kind": "int", "min": 1, "max": 8},),
@@ -567,6 +565,26 @@ def no_action_retry_delay(task):
     return max(30.0, min(300.0, interval_seconds))
 
 
+def routine_home_recovery_due(task, had_action, attempted, idle_seconds):
+    """Recover a newly started march task from an unrelated leftover screen."""
+    timeout = max(1.0, float(task.get("timeout_seconds", 8.0) or 8.0))
+    recovery_delay = min(12.0, timeout)
+    return bool(
+        task.get("uses_march", False)
+        and not had_action
+        and not attempted
+        and float(idle_seconds) >= recovery_delay
+    )
+
+
+def routine_march_context_key(input_backend, adb_serial, account_id):
+    """Build a stable scope for locally estimated march deadlines."""
+    backend = "adb" if str(input_backend or "").lower() == "adb" else "screen"
+    serial = str(adb_serial or "desktop").strip() or "desktop"
+    account = str(account_id or "default").strip() or "default"
+    return f"{backend}:{serial}:{account}"
+
+
 def no_available_squad_wait_exceeded(task, completed_steps, idle_seconds, grace_seconds=8.0):
     """Detect a squad screen that never exposes the final march button."""
     completed = {str(step) for step in completed_steps}
@@ -607,6 +625,8 @@ def upgrade_resource_runtime_metadata(images, tasks):
                 image["action"] = "open_world_search"
                 image["next_template_uid"] = world_search_uid
                 image["delay"] = 0.8
+            if step_id == "march":
+                image["confirm_disappears"] = True
             previous_step = runtime_step
             prior_runtime_steps.append(runtime_step)
             upgraded += 1
@@ -651,6 +671,8 @@ def upgrade_strict_runtime_metadata(images, tasks):
             image["routine_priority"] = 10 + index * 10
             image["allow_runtime_resume"] = True
             image["implied_runtime_steps"] = list(sequence[:index])
+            if step_id == "march":
+                image["confirm_disappears"] = True
             image.pop("requires_runtime_steps", None)
             selected_training_building = (
                 task_id.startswith("train_") and step_id == "building"
@@ -679,6 +701,8 @@ def upgrade_radar_runtime_metadata(images, tasks):
         if image is None:
             continue
         image["routine_priority"] = priority
+        if step_id == "march":
+            image["confirm_disappears"] = True
         # Radar is complete only after no actionable templates remain. A positive
         # max_tasks value is retained as a setting for compatibility, not as an
         # early-completion trigger.

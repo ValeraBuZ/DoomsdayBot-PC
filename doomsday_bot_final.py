@@ -53,6 +53,8 @@ from doomsdaybot.routines import (
     no_available_squad_wait_exceeded,
     normalize_routine_tasks,
     pick_due_task_index,
+    routine_home_recovery_due,
+    routine_march_context_key,
     runtime_step_is_ready,
     upgrade_radar_runtime_metadata,
     upgrade_resource_runtime_metadata,
@@ -62,7 +64,7 @@ from doomsdaybot.state import BotState, compute_runtime_seconds
 from doomsdaybot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.1.4"
+APP_VERSION = "3.1.5"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -213,6 +215,7 @@ LANGUAGES = {
         'routine_waiting': "Ожидание: следующая задача «{name}» через {seconds} сек | походы {active}/{maximum}",
         'routine_completed': "Задача «{name}» завершена | следующий запуск через {minutes:g} мин",
         'routine_no_action': "Задача «{name}» не выполнена: действий не найдено | повтор через {seconds} сек",
+        'routine_recovering_home': "Действия не найдены: один раз возвращаюсь на главный экран",
         'routine_full_marches': "Все походы заняты: {active}/{maximum}",
         'routine_reset_marches': "Сбросить походы",
         'routine_dialog_title': "Настройка рутинных задач",
@@ -414,6 +417,7 @@ LANGUAGES = {
         'routine_waiting': "Waiting: next task '{name}' in {seconds} sec | marches {active}/{maximum}",
         'routine_completed': "Task '{name}' complete | next run in {minutes:g} min",
         'routine_no_action': "Task '{name}' was not completed: no action found | retry in {seconds} sec",
+        'routine_recovering_home': "No action found: returning to the main screen once",
         'routine_full_marches': "All marches are busy: {active}/{maximum}",
         'routine_reset_marches': "Reset marches",
         'routine_dialog_title': "Routine task settings",
@@ -569,6 +573,7 @@ class AutoClicker:
         self.routine_tasks = default_routine_tasks()
         self.routine_max_marches = 5
         self.routine_march_deadlines = []
+        self.routine_march_context = ""
         self.routine_deployment_blocked_until = 0.0
         self.routine_next_run = {}
         self.current_routine_index = 0
@@ -579,6 +584,7 @@ class AutoClicker:
         self.routine_action_counts = {}
         self.routine_completed_steps = set()
         self.routine_idle_confirmation_count = 0
+        self.routine_home_recovery_attempted = False
         self.routine_only_task_id = None
 
         # Profiles let one LDPlayer instance rotate through saved in-game accounts.
@@ -785,6 +791,7 @@ class AutoClicker:
         if adb_path is not None:
             self.adb_path = str(adb_path).strip()
         self._refresh_adb_client()
+        self._ensure_routine_march_context()
         self.save_config()
 
     def _ldplayer_instances(self):
@@ -815,6 +822,7 @@ class AutoClicker:
         self._refresh_adb_client()
         if changed:
             logger.info("Профиль автоматически привязан к ADB %s", serial)
+            self._ensure_routine_march_context()
             self.save_config()
             if self.root:
                 self.gui_queue.put((self.root.event_generate, ("<<AccountChanged>>",), {"when": "tail"}))
@@ -1536,6 +1544,7 @@ class AutoClicker:
                         for deadline in data.get('routine_march_deadlines', [])
                         if isinstance(deadline, (int, float)) and float(deadline) > now
                     ][:self.routine_max_marches]
+                    self.routine_march_context = str(data.get('routine_march_context') or "")
                     for task in self.routine_tasks:
                         self.groups.setdefault(effective_task_group(task), task.get("enabled", True))
                     self.groups.setdefault(SYSTEM_TEMPLATE_GROUP, True)
@@ -1668,6 +1677,7 @@ class AutoClicker:
                 'routine_tasks': self.routine_tasks,
                 'routine_max_marches': self.routine_max_marches,
                 'routine_march_deadlines': self.routine_march_deadlines,
+                'routine_march_context': self.routine_march_context,
                 'routine_next_run': self.routine_next_run,
                 'account_profiles': self.account_profiles,
                 'current_account_id': self.current_account_id,
@@ -1893,6 +1903,7 @@ class AutoClicker:
         }
         self.adb_serial = str(profile.get("adb_serial") or self.adb_serial)
         self._refresh_adb_client()
+        self._ensure_routine_march_context()
         for task in self.routine_tasks:
             self.groups[effective_task_group(task)] = bool(task.get("enabled", False))
         self.account_session_deadline = time.time() + float(profile.get("session_minutes", 30.0)) * 60.0
@@ -1986,10 +1997,31 @@ class AutoClicker:
         self.routine_next_run["__account_switch__"] = 0.0
         return self.start()
 
+    def _ensure_routine_march_context(self):
+        context = routine_march_context_key(
+            self.input_backend,
+            self.adb_serial,
+            self.current_account_id,
+        )
+        if context == self.routine_march_context:
+            return False
+        if self.routine_march_deadlines:
+            logger.info(
+                "March context changed from %s to %s; clearing %s estimated deadlines",
+                self.routine_march_context or "legacy",
+                context,
+                len(self.routine_march_deadlines),
+            )
+        self.routine_march_context = context
+        self.routine_march_deadlines = []
+        self.routine_deployment_blocked_until = 0.0
+        return True
+
     def get_active_marches(self, now=None):
         now = time.time() if now is None else float(now)
+        context_changed = self._ensure_routine_march_context()
         active = [deadline for deadline in self.routine_march_deadlines if float(deadline) > now]
-        if len(active) != len(self.routine_march_deadlines):
+        if context_changed or len(active) != len(self.routine_march_deadlines):
             self.routine_march_deadlines = active[:self.routine_max_marches]
             self.save_config()
         observed = self._detect_observed_marches()
@@ -2070,7 +2102,6 @@ class AutoClicker:
             runtime_task["enabled"] = bool(
                 is_task_effectively_enabled(task)
                 and self.groups.get(runtime_task.get("group"), True)
-                and (not task.get("standalone", False) or self.routine_only_task_id == task.get("id"))
                 and (self.routine_only_task_id in (None, task.get("id")))
                 and has_templates
             )
@@ -2148,6 +2179,7 @@ class AutoClicker:
         self.routine_action_counts = {}
         self.routine_completed_steps = set()
         self.routine_idle_confirmation_count = 0
+        self.routine_home_recovery_attempted = False
         template_count = len(self.get_routine_templates(task, active_only=True))
         self.set_status_message(
             self.tr(
@@ -2248,6 +2280,17 @@ class AutoClicker:
             self.routine_deployment_blocked_until = 0.0
             self._register_routine_march(task, now)
 
+        if should_count_march and task.get("id") in {
+            "food",
+            "wood",
+            "metal",
+            "oil",
+            "zombie_hunt",
+            "collective_mind",
+        }:
+            self._interruptible_sleep(1.5)
+            self._return_to_main_screen(max_back_steps=3)
+
         if task.get("id") in {
             "alliance_donations",
             "gathering_boost",
@@ -2277,6 +2320,20 @@ class AutoClicker:
         self.routine_action_counts = {}
         self.routine_completed_steps = set()
         self.routine_idle_confirmation_count = 0
+        self.routine_home_recovery_attempted = False
+
+    def _try_recover_current_routine_home(self, task):
+        self.routine_home_recovery_attempted = True
+        logger.info(
+            "Routine %s found no first action; attempting one-time return to the main screen",
+            task.get("id"),
+        )
+        self.set_status_message(self.tr('routine_recovering_home'), force=True)
+        if not self._return_to_main_screen(max_back_steps=4):
+            return False
+        self.blocked_coords.clear()
+        self.routine_last_action_time = time.time()
+        return True
 
     def _defer_current_routine_no_action(self, now=None):
         now = time.time() if now is None else float(now)
@@ -2307,6 +2364,7 @@ class AutoClicker:
         self.routine_action_counts = {}
         self.routine_completed_steps = set()
         self.routine_idle_confirmation_count = 0
+        self.routine_home_recovery_attempted = False
 
     def _defer_current_routine_no_squad(self, now=None):
         now = time.time() if now is None else float(now)
@@ -2335,6 +2393,7 @@ class AutoClicker:
         self.routine_action_counts = {}
         self.routine_completed_steps = set()
         self.routine_idle_confirmation_count = 0
+        self.routine_home_recovery_attempted = False
 
     def start_normal(self):
         self.routine_mode = False
@@ -2352,7 +2411,6 @@ class AutoClicker:
         enabled_tasks = [
             task for task in self.routine_tasks
             if is_task_effectively_enabled(task)
-            and not task.get("standalone", False)
         ]
         if not enabled_tasks:
             self._show_notification('warning', 'routine_no_enabled')
@@ -2811,7 +2869,13 @@ class AutoClicker:
                                 self.set_status_message(
                                     f"Найдено: {img_config['description']} ({bbox[0]},{bbox[1]})"
                                 )
-                                self._execute_action(img_config, location)
+                                action_confirmed = self._execute_action(img_config, location)
+                                if action_confirmed is False:
+                                    logger.warning(
+                                        "Действие не подтверждено экраном: %s",
+                                        img_config.get("description"),
+                                    )
+                                    continue
                                 self.stats[img_config["path"]] = self.stats.get(img_config["path"], 0) + 1
                                 self.click_count += 1
                                 action_occurred = True
@@ -2904,6 +2968,13 @@ class AutoClicker:
                         self._defer_current_routine_no_squad(time.time())
                         continue
                     if not action_occurred and idle >= timeout:
+                        if routine_home_recovery_due(
+                            current_routine_task,
+                            self.routine_current_had_action,
+                            self.routine_home_recovery_attempted,
+                            idle,
+                        ) and self._try_recover_current_routine_home(current_routine_task):
+                            continue
                         if self._routine_idle_completion_ready(current_routine_task) or (
                             self.routine_current_had_action
                             and not current_routine_task.get("complete_when_idle")
@@ -3072,22 +3143,22 @@ class AutoClicker:
             plus_x = int(round(target_x + 144 * display.scale_x))
             plus_y = minus_y
             if self.uses_adb:
-                for _ in range(8):
-                    self.adb_client.tap(minus_x, minus_y)
-                    time.sleep(0.05)
-                for _ in range(level - 1):
+                for _ in range(7):
                     self.adb_client.tap(plus_x, plus_y)
+                    time.sleep(0.05)
+                for _ in range(8 - level):
+                    self.adb_client.tap(minus_x, minus_y)
                     time.sleep(0.05)
                 self.adb_client.tap(int(round(target_x)), int(round(target_y)))
                 time.sleep(2.0)
                 frame = self.adb_client.screenshot_bgr()
                 self.adb_client.tap(frame.shape[1] // 2, int(round(frame.shape[0] * 0.49)))
             else:
-                for _ in range(8):
-                    pyautogui.click(minus_x, minus_y)
-                    time.sleep(0.05)
-                for _ in range(level - 1):
+                for _ in range(7):
                     pyautogui.click(plus_x, plus_y)
+                    time.sleep(0.05)
+                for _ in range(8 - level):
+                    pyautogui.click(minus_x, minus_y)
                     time.sleep(0.05)
                 pyautogui.click(target_x, target_y)
                 time.sleep(2.0)
@@ -3100,39 +3171,43 @@ class AutoClicker:
             return
 
         if action in {"zombie_search", "hivemind_search"}:
-            settings = self._current_task_settings()
-            if action == "zombie_search":
-                minimum = min(50, max(1, int(settings.get("level_min", 1))))
-                maximum = min(50, max(minimum, int(settings.get("level_max", 10))))
-                level = maximum
-            else:
-                level = min(5, max(1, int(settings.get("level", 5))))
-            minus_x = int(round(target_x - 145 * display.scale_x))
-            minus_y = int(round(target_y - 76 * display.scale_y))
-            plus_x = int(round(target_x + 145 * display.scale_x))
-            plus_y = minus_y
             if self.uses_adb:
-                for _ in range(50):
-                    self.adb_client.tap(minus_x, minus_y)
-                for _ in range(level - 1):
-                    self.adb_client.tap(plus_x, plus_y)
                 self.adb_client.tap(int(round(target_x)), int(round(target_y)))
                 time.sleep(2.0)
                 frame = self.adb_client.screenshot_bgr()
-                self.adb_client.tap(frame.shape[1] // 2, int(round(frame.shape[0] * 0.49)))
             else:
-                for _ in range(50):
-                    pyautogui.click(minus_x, minus_y)
-                for _ in range(level - 1):
-                    pyautogui.click(plus_x, plus_y)
                 pyautogui.click(target_x, target_y)
                 time.sleep(2.0)
                 width, height = pyautogui.size()
+            self._invalidate_capture()
+            no_result = None
+            no_result_uid = str(img_config.get("no_result_template_uid") or "")
+            if no_result_uid:
+                no_result = next(
+                    (
+                        image for image in self.search_images
+                        if str(image.get("uid") or "") == no_result_uid
+                    ),
+                    None,
+                )
+            if no_result is not None:
+                no_result_location, _bbox, _confidence = self._locate_image(no_result)
+                if no_result_location is not None:
+                    img_config["last_used"] = time.time()
+                    self.set_status_message(
+                        "Коллективный разум выбранного уровня рядом не найден; повтор позже",
+                        force=True,
+                    )
+                    self._interruptible_sleep(img_config.get("delay", self.sleep_found))
+                    return
+            if self.uses_adb:
+                self.adb_client.tap(frame.shape[1] // 2, int(round(frame.shape[0] * 0.49)))
+            else:
                 pyautogui.click(width // 2, int(round(height * 0.49)))
             self._invalidate_capture()
             img_config["last_used"] = time.time()
             label = "зомби" if action == "zombie_search" else "коллективного разума"
-            self.set_status_message(f"Поиск {label} уровня {level}", force=True)
+            self.set_status_message(f"Поиск {label}: используется сохранённый в игре уровень", force=True)
             self._interruptible_sleep(img_config.get("delay", self.sleep_found))
             return
 
@@ -3414,6 +3489,21 @@ class AutoClicker:
         if delay > 0:
             logger.info(f"Блокирующая задержка {delay} сек после клика по {img_config['description']}")
             self._interruptible_sleep(delay)
+
+        if img_config.get("confirm_disappears", False):
+            deadline = time.monotonic() + 6.0
+            while time.monotonic() < deadline and not self.stop_event.is_set():
+                self._interruptible_sleep(0.5)
+                location_after, bbox_after, _score = self._locate_image(img_config)
+                if not location_after or not bbox_after:
+                    logger.info("Отправка похода подтверждена сменой экрана: %s", img_config["description"])
+                    return True
+            self.set_status_message(
+                "Отправка похода не подтверждена: отряд остался на экране",
+                force=True,
+            )
+            return False
+        return True
 
     def _interruptible_sleep(self, seconds):
         end_time = time.time() + seconds

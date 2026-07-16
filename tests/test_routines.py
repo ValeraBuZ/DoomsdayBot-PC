@@ -14,7 +14,10 @@ from doomsdaybot.routines import (
     no_available_squad_wait_exceeded,
     normalize_routine_tasks,
     pick_due_task_index,
+    routine_home_recovery_due,
+    routine_march_context_key,
     runtime_step_is_ready,
+    task_setting_specs,
     upgrade_radar_runtime_metadata,
     upgrade_resource_runtime_metadata,
     upgrade_strict_runtime_metadata,
@@ -185,6 +188,28 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertEqual(no_action_retry_delay({"interval_minutes": 2.0}), 120.0)
         self.assertEqual(no_action_retry_delay({"interval_minutes": 60.0}), 300.0)
 
+    def test_home_recovery_only_runs_before_the_first_march_action(self):
+        task = {"uses_march": True, "timeout_seconds": 1800.0}
+        self.assertFalse(routine_home_recovery_due(task, False, False, 11.9))
+        self.assertTrue(routine_home_recovery_due(task, False, False, 12.0))
+        self.assertFalse(routine_home_recovery_due(task, True, False, 1800.0))
+        self.assertFalse(routine_home_recovery_due(task, False, True, 1800.0))
+        self.assertFalse(
+            routine_home_recovery_due({"uses_march": False}, False, False, 20.0)
+        )
+
+    def test_march_deadline_context_is_scoped_to_player_and_account(self):
+        phoenix = routine_march_context_key("adb", "emulator-5564", "phoenix")
+        focus = routine_march_context_key("adb", "emulator-5568", "focus")
+        second_account = routine_march_context_key("adb", "emulator-5564", "farm")
+
+        self.assertNotEqual(phoenix, focus)
+        self.assertNotEqual(phoenix, second_account)
+        self.assertEqual(
+            phoenix,
+            routine_march_context_key("ADB", "emulator-5564", "phoenix"),
+        )
+
     def test_missing_march_button_defers_after_squad_screen_grace(self):
         task = {"uses_march": True}
         self.assertFalse(no_available_squad_wait_exceeded(task, {"create_squad"}, 7.9))
@@ -253,7 +278,7 @@ class RoutineTaskTests(unittest.TestCase):
         }
         hunt_uids = {
             step: str(uuid.uuid5(namespace, f"zombie_hunt:{step}"))
-            for step in ("region", "world_search", "zombie_icon", "search")
+            for step in ("region", "world_search", "zombie_icon", "search", "march")
         }
         images = [
             *({"uid": uid} for uid in training_uids.values()),
@@ -264,7 +289,7 @@ class RoutineTaskTests(unittest.TestCase):
             {"id": "zombie_hunt", "timeout_seconds": 12.0},
         ]
 
-        self.assertEqual(upgrade_strict_runtime_metadata(images, tasks), 7)
+        self.assertEqual(upgrade_strict_runtime_metadata(images, tasks), 8)
         by_uid = {image["uid"]: image for image in images}
         self.assertNotIn("requires_runtime_steps", by_uid[training_uids["building"]])
         self.assertEqual(
@@ -282,6 +307,15 @@ class RoutineTaskTests(unittest.TestCase):
         )
         self.assertEqual(tasks[0]["timeout_seconds"], 20.0)
         self.assertEqual(tasks[1]["timeout_seconds"], 20.0)
+        self.assertTrue(by_uid[hunt_uids["march"]]["confirm_disappears"])
+
+    def test_hunt_levels_are_left_to_the_game_selection(self):
+        zombie_keys = {spec["key"] for spec in task_setting_specs("zombie_hunt")}
+        collective_keys = {spec["key"] for spec in task_setting_specs("collective_mind")}
+
+        self.assertNotIn("level_min", zombie_keys)
+        self.assertNotIn("level_max", zombie_keys)
+        self.assertNotIn("level", collective_keys)
 
     def test_strict_sequence_can_resume_from_visible_later_step(self):
         image = {
