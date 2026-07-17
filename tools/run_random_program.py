@@ -53,7 +53,7 @@ TASK_FAILURE_PATTERNS = (
 BUSY_SQUAD_PATTERNS = (
     r"Routine ([a-z0-9_]+) reached the squad screen while every squad is busy",
     r"Routine ([a-z0-9_]+) reached the squad screen without an available squad",
-    r"Routine ([a-z0-9_]+) is temporarily unavailable \(max_queue_checks\)",
+    r"Routine ([a-z0-9_]+) is temporarily unavailable \((?:max_queue_checks|max_lab_checks)\)",
 )
 
 

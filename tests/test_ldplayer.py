@@ -2,11 +2,13 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from doomsdaybot.ldplayer import (
     adb_debug_enabled,
     enable_adb_debug,
     index_from_serial,
+    launch_instance,
     parse_list2,
     serial_for_index,
 )
@@ -39,6 +41,15 @@ class LDPlayerTests(unittest.TestCase):
             self.assertTrue(adb_debug_enabled(ldconsole, 3))
             self.assertTrue(config_path.with_suffix(".config.doomsdaybot.bak").is_file())
             self.assertFalse(enable_adb_debug(ldconsole, 3))
+
+    @patch("doomsdaybot.ldplayer._run_ldconsole")
+    def test_launch_instance_uses_hidden_ldconsole_command(self, run_ldconsole):
+        launch_instance(Path("ldconsole.exe"), 5)
+        run_ldconsole.assert_called_once_with(
+            Path("ldconsole.exe"),
+            ["launch", "--index", 5],
+            timeout=20,
+        )
 
 
 if __name__ == "__main__":

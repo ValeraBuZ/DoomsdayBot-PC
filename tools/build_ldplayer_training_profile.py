@@ -16,6 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from doomsdaybot.routines import (
+    RESOURCE_RESULT_SEARCH_REGION,
     default_routine_tasks,
     upgrade_radar_runtime_metadata,
     upgrade_prize_hunt_metadata,
@@ -31,8 +32,8 @@ PROFILE_NAMESPACE = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
 SYSTEM_GROUP = "Системные окна"
 ACCOUNT_SWITCH_GROUP = "Переключение аккаунта"
 RESOURCE_RESULT_LEVEL_TEMPLATES = {
-    6: ("resource_level6_result.png", (800, 207, 885, 244)),
-    7: ("resource_level7_result.png", (894, 207, 984, 244)),
+    6: ("resource_level6_result.png", (628, 391, 661, 425)),
+    7: ("resource_level7_result.png", (628, 391, 661, 425)),
 }
 
 RESOURCE_DATA = {
@@ -1116,7 +1117,7 @@ def build_profile(destination):
     manifest = {
         "format": "doomsday-training-profile",
         "format_version": 1,
-        "app_version": "3.1.12",
+        "app_version": "3.1.13",
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "source_screen": {"width": 1280, "height": 720},
         "routine_tasks": tasks,
@@ -1153,7 +1154,8 @@ def build_profile(destination):
                 "enabled": False,
                 "observer_only": True,
                 "guard_only": True,
-                "confidence": 0.86,
+                "confidence": 0.65,
+                "search_region": list(RESOURCE_RESULT_SEARCH_REGION),
             }
         )
         manifest["images"].append(level_image)
@@ -1628,6 +1630,8 @@ def build_profile(destination):
             "block_seconds": 0.7,
             "skip_if_uid_visible": research_guard_uid,
             "skip_if_visible_uids": [research_guard_uid, *research_alternate_guard_uids],
+            "limit_key": "max_lab_checks",
+            "defer_when_limit_reached": True,
         }
     )
     manifest["images"].append(research_queue_image)
@@ -1757,7 +1761,8 @@ def build_profile(destination):
         if step_id == "active":
             configured_image["action"] = "observe"
             configured_image["completes_routine"] = True
-            configured_image["confidence"] = 0.9
+            configured_image["confidence"] = 0.75
+            configured_image["orb_match_threshold"] = 3
             configured_image["routine_priority"] = 1
         elif step_id == "boost_category":
             configured_image["requires_runtime_steps"] = ["open_bag"]

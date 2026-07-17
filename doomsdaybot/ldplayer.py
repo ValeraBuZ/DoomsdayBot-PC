@@ -151,3 +151,6 @@ def enable_adb_debug(ldconsole_path, index):
 def reboot_instance(ldconsole_path, index):
     _run_ldconsole(ldconsole_path, ["reboot", "--index", int(index)], timeout=20)
 
+
+def launch_instance(ldconsole_path, index):
+    _run_ldconsole(ldconsole_path, ["launch", "--index", int(index)], timeout=20)

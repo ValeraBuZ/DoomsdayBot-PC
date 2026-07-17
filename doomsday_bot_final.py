@@ -36,6 +36,7 @@ from doomsdaybot.ldplayer import (
     enable_adb_debug,
     find_ldconsole,
     index_from_serial,
+    launch_instance,
     list_instances,
     reboot_instance,
 )
@@ -59,6 +60,7 @@ from doomsdaybot.routines import (
     routine_requires_settlement,
     routine_march_context_key,
     runtime_step_is_ready,
+    select_best_resource_result_level,
     upgrade_radar_runtime_metadata,
     upgrade_prize_hunt_metadata,
     upgrade_repeatable_claim_metadata,
@@ -69,7 +71,7 @@ from doomsdaybot.state import BotState, compute_runtime_seconds
 from doomsdaybot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.1.12"
+APP_VERSION = "3.1.13"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -620,6 +622,8 @@ class AutoClicker:
         self._adb_frame_cache = None
         self._adb_frame_timestamp = 0.0
         self._adb_capture_lock = threading.RLock()
+        self._adb_recovery_lock = threading.Lock()
+        self._adb_last_recovery_attempt = 0.0
         self.player_width = 1280
         self.player_height = 720
         self.player_name = ""
@@ -922,9 +926,13 @@ class AutoClicker:
 
         ldconsole, instances = self._ldplayer_instances()
         running = [item for item in instances if item.running]
-        target = next((item for item in running if item.index == instance_index), None)
+        target = next((item for item in instances if item.index == instance_index), None)
         if target is None:
             target = self.get_adb_repair_target()
+        if target is None:
+            current = self.get_current_account()
+            preferred_index = int(current.get("ldplayer_index", -1)) if current else -1
+            target = next((item for item in instances if item.index == preferred_index), None)
         if not ldconsole or not target:
             key = 'adb_multiple' if len(running) > 1 else 'adb_no_instance'
             self.set_status_message(self.tr(key), force=True)
@@ -936,7 +944,10 @@ class AutoClicker:
             changed = enable_adb_debug(ldconsole, target.index)
             logger.info("Настройка ADB LDPlayer изменена: %s", changed)
             AdbClient(self.adb_path or None, "").restart_server()
-            reboot_instance(ldconsole, target.index)
+            if target.running:
+                reboot_instance(ldconsole, target.index)
+            else:
+                launch_instance(ldconsole, target.index)
         except Exception as exc:
             logger.exception("Не удалось включить ADB для LDPlayer %s", target.index)
             self.set_status_message(f"Ошибка восстановления ADB: {exc}", force=True)
@@ -956,6 +967,41 @@ class AutoClicker:
         logger.error(message)
         self.set_status_message(message, force=True)
         return False
+
+    def _recover_runtime_adb_connection(self):
+        now = time.monotonic()
+        if now - self._adb_last_recovery_attempt < 20.0:
+            return False
+        if not self._adb_recovery_lock.acquire(blocking=False):
+            return False
+        try:
+            self._adb_last_recovery_attempt = now
+            instance_index = index_from_serial(self.adb_serial)
+            current = self.get_current_account()
+            if current and int(current.get("ldplayer_index", -1)) >= 0:
+                instance_index = int(current["ldplayer_index"])
+            logger.warning(
+                "ADB connection lost during execution; recovering LDPlayer %s",
+                instance_index,
+            )
+            self.set_status_message("Связь с LDPlayer потеряна. Восстанавливаю...", force=True)
+            if not self.repair_adb_connection(instance_index=instance_index):
+                return False
+            self._refresh_adb_client()
+            self.adb_client.launch_package(GAME_PACKAGE)
+            self._interruptible_sleep(8.0)
+            self.blocked_coords.clear()
+            self.routine_completed_steps = set()
+            self.routine_current_had_action = False
+            self.routine_last_action_time = time.time()
+            logger.info("Runtime ADB recovery completed for %s", self.adb_serial)
+            self.set_status_message("Связь восстановлена. Продолжаю текущую задачу", force=True)
+            return True
+        except Exception:
+            logger.exception("Runtime ADB recovery failed")
+            return False
+        finally:
+            self._adb_recovery_lock.release()
 
     def create_diagnostic_report(self):
         for handler in logger.handlers:
@@ -1026,7 +1072,12 @@ class AutoClicker:
                 return self._adb_frame_cache
             if self.adb_client is None:
                 self._refresh_adb_client()
-            frame = self.adb_client.screenshot_bgr()
+            try:
+                frame = self.adb_client.screenshot_bgr()
+            except AdbError:
+                if not self.is_running or not self._recover_runtime_adb_connection():
+                    raise
+                frame = self.adb_client.screenshot_bgr()
             self._adb_frame_cache = frame
             self._adb_frame_timestamp = time.monotonic()
             self._apply_player_resolution(frame.shape[1], frame.shape[0], persist=False)
@@ -1243,6 +1294,17 @@ class AutoClicker:
     def _locate_image(self, img_config):
         confidence = img_config.get("confidence", 0.8)
         if self.uses_adb:
+            search_region = self._region if self.work_area_type == 'selected' else None
+            configured_region = img_config.get("search_region")
+            if configured_region and len(configured_region) == 4:
+                display = self.get_display_profile()
+                x, y, width, height = map(float, configured_region)
+                search_region = (
+                    int(round(x * display.scale_x)),
+                    int(round(y * display.scale_y)),
+                    int(round(width * display.scale_x)),
+                    int(round(height * display.scale_y)),
+                )
             scales = matching_scales(
                 self.get_display_profile(),
                 extra_enabled=self.scale_enabled and img_config.get("use_scaling", True),
@@ -1252,7 +1314,7 @@ class AutoClicker:
             )
             return self._find_template_opencv(
                 img_config["path"],
-                self._region if self.work_area_type == 'selected' else None,
+                search_region,
                 confidence,
                 img_config.get("grayscale", True),
                 scales,
@@ -3408,6 +3470,8 @@ class AutoClicker:
         level_uids = img_config.get("result_level_template_uids") or {}
         if not isinstance(level_uids, dict):
             return None
+        matches = []
+        scores = []
         for level_text, uid in level_uids.items():
             level_image = next(
                 (
@@ -3418,13 +3482,19 @@ class AutoClicker:
             )
             if level_image is None:
                 continue
-            location, bbox, _confidence = self._locate_image(level_image)
+            location, bbox, confidence = self._locate_image(level_image)
+            scores.append((level_text, confidence))
             if location is None or bbox is None:
                 continue
             valid, _reason = self._validate_detected_match(level_image, bbox)
             if valid:
-                return int(level_text)
-        return None
+                matches.append((level_text, confidence))
+        logger.info(
+            "Resource result level scores: %s; valid: %s",
+            ", ".join(f"{level}={confidence:.3f}" for level, confidence in scores),
+            ", ".join(f"{level}={confidence:.3f}" for level, confidence in matches) or "none",
+        )
+        return select_best_resource_result_level(matches)
 
     def _resource_result_level_rejected(self, img_config):
         setting_key = str(img_config.get("expected_result_level_setting") or "")
@@ -3972,8 +4042,12 @@ class AutoClicker:
 
         self._invalidate_capture()
 
-        logger.info(f"Клик по области {img_config['description']} в ({x}, {y}) - action_occurred=True")
-        self.set_status_message(f"Действие: {img_config['description']} @ ({x}, {y})", force=True)
+        if action == "observe":
+            logger.info("Наблюдение подтверждено: %s в (%s, %s)", img_config["description"], x, y)
+            self.set_status_message(f"Обнаружено: {img_config['description']}", force=True)
+        else:
+            logger.info(f"Клик по области {img_config['description']} в ({x}, {y}) - action_occurred=True")
+            self.set_status_message(f"Действие: {img_config['description']} @ ({x}, {y})", force=True)
         img_config["last_used"] = time.time()
 
         if self.cycle_mode:
@@ -3982,7 +4056,10 @@ class AutoClicker:
 
         delay = img_config.get("delay", self.sleep_found)
         if delay > 0:
-            logger.info(f"Блокирующая задержка {delay} сек после клика по {img_config['description']}")
+            if action == "observe":
+                logger.info("Пауза %.1f сек после подтверждения %s", delay, img_config["description"])
+            else:
+                logger.info(f"Блокирующая задержка {delay} сек после клика по {img_config['description']}")
             self._interruptible_sleep(delay)
 
         if img_config.get("confirm_disappears", False):

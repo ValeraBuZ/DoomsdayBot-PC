@@ -15,6 +15,7 @@ PRIZE_HUNT_REPEAT_UIDS = {
 }
 RESOURCE_TASK_IDS = ("food", "wood", "metal", "oil")
 RESOURCE_RESULT_LEVELS = (6, 7)
+RESOURCE_RESULT_SEARCH_REGION = (570, 340, 150, 120)
 RESOURCE_STEP_IDS = (
     "region",
     "world_search",
@@ -279,6 +280,7 @@ DEFAULT_ROUTINE_TASKS = (
         "settings": {
             "branch": "off",
             "use_speedups": False,
+            "max_lab_checks": 1,
         },
     },
     {
@@ -679,6 +681,13 @@ def upgrade_resource_runtime_metadata(images, tasks):
     """Apply the current resource sequence to both fresh and older profiles."""
     images_by_uid = {str(image.get("uid") or ""): image for image in images}
     upgraded = 0
+    for level in RESOURCE_RESULT_LEVELS:
+        observer_uid = str(uuid.uuid5(PROFILE_NAMESPACE, f"resource_result_level:{level}"))
+        observer = images_by_uid.get(observer_uid)
+        if observer is not None:
+            observer["search_region"] = list(RESOURCE_RESULT_SEARCH_REGION)
+            observer["confidence"] = 0.65
+
     for task_id in RESOURCE_TASK_IDS:
         previous_step = None
         prior_runtime_steps = []
@@ -728,6 +737,19 @@ def upgrade_resource_runtime_metadata(images, tasks):
             )
             task["timeout_seconds"] = max(30.0, float(task.get("timeout_seconds", 0.0) or 0.0))
     return upgraded
+
+
+def select_best_resource_result_level(matches):
+    """Return the level with the strongest validated template match."""
+    candidates = []
+    for level, confidence in matches:
+        try:
+            candidates.append((float(confidence), int(level)))
+        except (TypeError, ValueError):
+            continue
+    if not candidates:
+        return None
+    return max(candidates)[1]
 
 
 def upgrade_repeatable_claim_metadata(images, tasks):
@@ -845,6 +867,30 @@ def upgrade_strict_runtime_metadata(images, tasks):
             previous_step = step_id
             upgraded += 1
 
+    research_queue_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "research:queue"))
+    research_queue = images_by_uid.get(research_queue_uid)
+    if research_queue is not None:
+        research_queue.update(
+            {
+                "limit_key": "max_lab_checks",
+                "defer_when_limit_reached": True,
+            }
+        )
+        upgraded += 1
+
+    active_boost_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "gathering_boost:active"))
+    active_boost = images_by_uid.get(active_boost_uid)
+    if active_boost is not None:
+        active_boost.update(
+            {
+                "confidence": 0.75,
+                "orb_match_threshold": 3,
+                "completes_routine": True,
+                "routine_priority": 1,
+            }
+        )
+        upgraded += 1
+
     for task in tasks:
         if task.get("id") in STRICT_RUNTIME_SEQUENCES:
             task["timeout_seconds"] = max(
@@ -853,6 +899,8 @@ def upgrade_strict_runtime_metadata(images, tasks):
             )
         if str(task.get("id") or "").startswith("train_"):
             task.setdefault("settings", {}).setdefault("max_queue_checks", 4)
+        if task.get("id") == "research":
+            task.setdefault("settings", {}).setdefault("max_lab_checks", 1)
 
     # Claiming a main mission can move the game directly to the daily tab.
     # Allow the first guarded swipe to resume from that screen even when the

@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import uuid
 
 from doomsdaybot.routines import (
+    PROFILE_NAMESPACE,
     completed_runtime_steps_for_image,
     default_routine_tasks,
     effective_active_marches,
@@ -386,11 +387,13 @@ class RoutineTaskTests(unittest.TestCase):
         icon_uid = str(uuid.uuid5(namespace, "wood:resource_icon"))
         search_uid = str(uuid.uuid5(namespace, "wood:search_button"))
         gather_uid = str(uuid.uuid5(namespace, "wood:gather"))
+        level6_uid = str(uuid.uuid5(namespace, "resource_result_level:6"))
         images = [
             {"uid": region_uid},
             {"uid": icon_uid},
             {"uid": search_uid},
             {"uid": gather_uid},
+            {"uid": level6_uid},
         ]
         tasks = [{"id": "wood", "timeout_seconds": 10.0}]
 
@@ -403,7 +406,22 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertTrue(runtime_step_is_ready(images[1], set()))
         self.assertEqual(images[3]["expected_result_level_setting"], "resource_level")
         self.assertEqual(set(images[3]["result_level_template_uids"]), {"6", "7"})
+        self.assertEqual(images[4]["search_region"], [570, 340, 150, 120])
+        self.assertEqual(images[4]["confidence"], 0.65)
         self.assertEqual(tasks[0]["timeout_seconds"], 30.0)
+
+    def test_resource_result_level_uses_strongest_match_not_mapping_order(self):
+        from doomsdaybot.routines import select_best_resource_result_level
+
+        self.assertEqual(
+            select_best_resource_result_level([("6", 0.88), ("7", 0.96)]),
+            7,
+        )
+        self.assertEqual(
+            select_best_resource_result_level([("7", 0.91), ("6", 0.97)]),
+            6,
+        )
+        self.assertIsNone(select_best_resource_result_level([]))
 
     def test_healing_training_and_hunts_are_upgraded_to_strict_sequences(self):
         import uuid
@@ -450,6 +468,29 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertEqual(tasks[0]["timeout_seconds"], 20.0)
         self.assertEqual(tasks[1]["timeout_seconds"], 20.0)
         self.assertTrue(by_uid[hunt_uids["march"]]["confirm_disappears"])
+
+    def test_busy_research_queue_is_checked_once_then_deferred(self):
+        research_queue_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "research:queue"))
+        images = [{"uid": research_queue_uid, "allow_repeat": True}]
+        tasks = [{"id": "research", "settings": {"branch": "economy"}}]
+
+        self.assertEqual(upgrade_strict_runtime_metadata(images, tasks), 1)
+        self.assertEqual(images[0]["limit_key"], "max_lab_checks")
+        self.assertTrue(images[0]["defer_when_limit_reached"])
+        self.assertEqual(tasks[0]["settings"]["max_lab_checks"], 1)
+
+    def test_animated_active_boost_marker_completes_without_reapplying(self):
+        import uuid
+
+        namespace = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
+        active_uid = str(uuid.uuid5(namespace, "gathering_boost:active"))
+        images = [{"uid": active_uid, "confidence": 0.9}]
+
+        upgrade_strict_runtime_metadata(images, default_routine_tasks())
+
+        self.assertEqual(images[0]["confidence"], 0.75)
+        self.assertEqual(images[0]["orb_match_threshold"], 3)
+        self.assertTrue(images[0]["completes_routine"])
 
     def test_completed_tasks_can_resume_when_claim_switches_to_daily_tab(self):
         import uuid
