@@ -14,6 +14,7 @@ PRIZE_HUNT_REPEAT_UIDS = {
     for step_id in ("again", "match", "confirm")
 }
 RESOURCE_TASK_IDS = ("food", "wood", "metal", "oil")
+RESOURCE_RESULT_LEVELS = (6, 7)
 RESOURCE_STEP_IDS = (
     "region",
     "world_search",
@@ -123,6 +124,7 @@ DEFAULT_ROUTINE_TASKS = (
         "timeout_seconds": 8.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
+        "empty_home_is_success": True,
         "settings": {},
     },
     {
@@ -231,7 +233,7 @@ DEFAULT_ROUTINE_TASKS = (
         "priority": 25,
         # One spent attempt is restored by the game roughly every 20 minutes.
         "interval_minutes": 20.0,
-        "timeout_seconds": 12.0,
+        "timeout_seconds": 6.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
         "settings": {
@@ -418,7 +420,7 @@ DEFAULT_ROUTINE_TASKS = (
         "timeout_seconds": 12.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
-        "settings": {"repeat": True, "level": 5},
+        "settings": {"repeat": True, "level": 6},
     },
     {
         "id": "food",
@@ -520,11 +522,17 @@ TASK_SETTING_SPECS = {
     ),
     "collective_mind": (
         {"key": "repeat", "label": "Повторять сбор", "kind": "bool"},
+        {
+            "key": "level",
+            "label": "Уровень",
+            "kind": "choice",
+            "choices": ((6, "6"), (7, "7")),
+        },
     ),
-    "food": ({"key": "resource_level", "label": "Уровень клетки", "kind": "int", "min": 1, "max": 8},),
-    "wood": ({"key": "resource_level", "label": "Уровень клетки", "kind": "int", "min": 1, "max": 8},),
-    "metal": ({"key": "resource_level", "label": "Уровень клетки", "kind": "int", "min": 1, "max": 8},),
-    "oil": ({"key": "resource_level", "label": "Уровень клетки", "kind": "int", "min": 1, "max": 8},),
+    "food": ({"key": "resource_level", "label": "Уровень клетки", "kind": "int", "min": 1, "max": 7},),
+    "wood": ({"key": "resource_level", "label": "Уровень клетки", "kind": "int", "min": 1, "max": 7},),
+    "metal": ({"key": "resource_level", "label": "Уровень клетки", "kind": "int", "min": 1, "max": 7},),
+    "oil": ({"key": "resource_level", "label": "Уровень клетки", "kind": "int", "min": 1, "max": 7},),
 }
 
 
@@ -686,6 +694,14 @@ def upgrade_resource_runtime_metadata(images, tasks):
                 image["next_template_uid"] = world_search_uid
                 image["delay"] = 0.8
                 image["settlement_screen_marker"] = True
+            if step_id == "gather":
+                image["expected_result_level_setting"] = "resource_level"
+                image["result_level_template_uids"] = {
+                    str(level): str(
+                        uuid.uuid5(PROFILE_NAMESPACE, f"resource_result_level:{level}")
+                    )
+                    for level in RESOURCE_RESULT_LEVELS
+                }
             if step_id == "march":
                 image["confirm_disappears"] = True
             previous_step = runtime_step
@@ -694,6 +710,11 @@ def upgrade_resource_runtime_metadata(images, tasks):
 
     for task in tasks:
         if task.get("id") in RESOURCE_TASK_IDS:
+            settings = task.setdefault("settings", {})
+            settings["resource_level"] = min(
+                7,
+                max(1, int(settings.get("resource_level", 7) or 7)),
+            )
             task["timeout_seconds"] = max(30.0, float(task.get("timeout_seconds", 0.0) or 0.0))
     return upgraded
 
@@ -711,12 +732,14 @@ def upgrade_repeatable_claim_metadata(images, tasks):
     )
     vip_claim_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "vip_rewards:claim_chest"))
     vip_dismiss_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "vip_rewards:dismiss_info"))
+    vip_receive_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "vip_rewards:receive_free"))
     vip_close_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "vip_rewards:close_vip"))
 
     repeatable = {
         alliance_donate_uid: 0.8,
         vip_claim_uid: 1.0,
         vip_dismiss_uid: 0.8,
+        vip_receive_uid: 1.0,
     }
     for uid, block_seconds in repeatable.items():
         image = images_by_uid.get(uid)
@@ -724,11 +747,13 @@ def upgrade_repeatable_claim_metadata(images, tasks):
             continue
         image["allow_repeat"] = True
         image["block_seconds"] = block_seconds
+        if uid == vip_receive_uid:
+            image["completes_routine"] = True
         upgraded += 1
 
     guarded_closers = {
         alliance_close_uid: [alliance_donate_uid],
-        vip_close_uid: [vip_claim_uid, vip_dismiss_uid],
+        vip_close_uid: [vip_claim_uid, vip_dismiss_uid, vip_receive_uid],
     }
     for uid, guard_uids in guarded_closers.items():
         image = images_by_uid.get(uid)
@@ -741,13 +766,20 @@ def upgrade_repeatable_claim_metadata(images, tasks):
         upgraded += 1
 
     for task in tasks:
-        if task.get("id") != "alliance_donations":
-            continue
-        settings = task.setdefault("settings", {})
-        settings["max_donations"] = max(
-            100,
-            int(settings.get("max_donations", 0) or 0),
-        )
+        if task.get("id") == "alliance_donations":
+            settings = task.setdefault("settings", {})
+            settings["max_donations"] = max(
+                100,
+                int(settings.get("max_donations", 0) or 0),
+            )
+            task["timeout_seconds"] = min(
+                6.0,
+                float(task.get("timeout_seconds", 6.0) or 6.0),
+            )
+        elif task.get("id") == "collective_mind":
+            settings = task.setdefault("settings", {})
+            level = int(settings.get("level", 6) or 6)
+            settings["level"] = 7 if level == 7 else 6
 
     return upgraded
 
@@ -788,6 +820,9 @@ def upgrade_strict_runtime_metadata(images, tasks):
             image["implied_runtime_steps"] = list(sequence[:index])
             if step_id == "march":
                 image["confirm_disappears"] = True
+            if task_id.startswith("train_") and step_id == "queue":
+                image["repeat_runtime_step"] = True
+                image["dynamic_building_search"] = True
             image.pop("requires_runtime_steps", None)
             selected_training_building = (
                 task_id.startswith("train_") and step_id == "building"
@@ -1068,6 +1103,12 @@ def _normalize_task(source, default):
         ),
         "complete_when_idle": bool(
             source.get("complete_when_idle", default.get("complete_when_idle", False))
+        ),
+        "empty_home_is_success": bool(
+            source.get(
+                "empty_home_is_success",
+                default.get("empty_home_is_success", False),
+            )
         ),
         "idle_confirmations": int(
             _positive_float(

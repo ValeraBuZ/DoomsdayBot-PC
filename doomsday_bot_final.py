@@ -68,7 +68,7 @@ from doomsdaybot.state import BotState, compute_runtime_seconds
 from doomsdaybot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.1.10"
+APP_VERSION = "3.1.11"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -3138,6 +3138,15 @@ class AutoClicker:
                                     ):
                                         self._finish_current_routine(self.routine_last_action_time)
                                         refresh_after_action = True
+                                    if (
+                                        self.current_routine_task_id is not None
+                                        and img_config.get("completes_routine", False)
+                                    ):
+                                        self._finish_current_routine(
+                                            self.routine_last_action_time,
+                                            completion_clicked=True,
+                                        )
+                                        refresh_after_action = True
                                     limit_key = str(img_config.get("limit_key") or "")
                                     if limit_key:
                                         self.routine_current_action_count += 1
@@ -3145,6 +3154,15 @@ class AutoClicker:
                                             self.routine_action_counts.get(limit_key, 0) + 1
                                         )
                                         limit = int(current_routine_task.get("settings", {}).get(limit_key, 0) or 0)
+                                        if (
+                                            current_routine_task.get("id") == "alliance_donations"
+                                            and limit_key == "max_project_checks"
+                                        ):
+                                            self.set_status_message(
+                                                "Пожертвования: проверено проектов "
+                                                f"{self.routine_action_counts[limit_key]}/{limit}",
+                                                force=True,
+                                            )
                                         if limit > 0 and self.routine_action_counts[limit_key] >= limit:
                                             self._finish_current_routine(self.routine_last_action_time)
                                             refresh_after_action = True
@@ -3228,6 +3246,16 @@ class AutoClicker:
                             else:
                                 self._defer_current_routine_no_action(time.time())
                             continue
+                        if (
+                            current_routine_task.get("empty_home_is_success")
+                            and self._is_main_screen_visible()
+                        ):
+                            self.set_status_message(
+                                f"{self.get_routine_task_name(current_routine_task)}: доступных действий нет",
+                                force=True,
+                            )
+                            self._finish_current_routine(time.time())
+                            continue
                         if routine_home_recovery_due(
                             current_routine_task,
                             self.routine_current_had_action,
@@ -3310,6 +3338,65 @@ class AutoClicker:
         settings = self._current_task_settings()
         return not settings.get("avoid_gems", True)
 
+    def _detect_resource_result_level(self, img_config):
+        level_uids = img_config.get("result_level_template_uids") or {}
+        if not isinstance(level_uids, dict):
+            return None
+        for level_text, uid in level_uids.items():
+            level_image = next(
+                (
+                    image for image in self.search_images
+                    if str(image.get("uid") or "") == str(uid or "")
+                ),
+                None,
+            )
+            if level_image is None:
+                continue
+            location, bbox, _confidence = self._locate_image(level_image)
+            if location is None or bbox is None:
+                continue
+            valid, _reason = self._validate_detected_match(level_image, bbox)
+            if valid:
+                return int(level_text)
+        return None
+
+    def _resource_result_level_rejected(self, img_config):
+        setting_key = str(img_config.get("expected_result_level_setting") or "")
+        if not setting_key:
+            return False
+        expected = int(self._current_task_settings().get(setting_key, 7) or 7)
+        level_uids = img_config.get("result_level_template_uids") or {}
+        if str(expected) not in level_uids:
+            return False
+        detected = self._detect_resource_result_level(img_config)
+        if detected == expected:
+            self.set_status_message(f"Подтверждён ресурс уровня {expected}", force=True)
+            return False
+
+        detected_label = str(detected) if detected is not None else "не распознан"
+        logger.warning(
+            "Resource result rejected: expected level %s, detected %s",
+            expected,
+            detected_label,
+        )
+        self.set_status_message(
+            f"Ресурс отклонён: нужен уровень {expected}, найден {detected_label}",
+            force=True,
+        )
+        try:
+            if self.uses_adb:
+                self.adb_client.keyevent(4)
+            else:
+                pyautogui.press("escape")
+        except Exception:
+            logger.exception("Не удалось закрыть карточку ресурса неверного уровня")
+        self._invalidate_capture()
+        img_config["last_used"] = time.time()
+        task = self.get_routine_task(self.current_routine_task_id) or {}
+        timeout = float(task.get("timeout_seconds", 8.0) or 8.0)
+        self.routine_last_action_time = time.time() - timeout - 0.1
+        return True
+
     def _execute_action(self, img_config, location):
         x, y = location.x, location.y
         offset = img_config.get("click_offset", (0, 0))
@@ -3321,16 +3408,13 @@ class AutoClicker:
         numbers = self._resolve_action_numbers(img_config)
         click_seq = img_config.get("click_sequence", [])
 
+        if self._resource_result_level_rejected(img_config):
+            return False
+
         if action == "select_training_queue":
-            clear_x = int(round(300 * display.scale_x))
-            clear_y = int(round(400 * display.scale_y))
             if self.uses_adb:
-                self.adb_client.tap(clear_x, clear_y)
-                time.sleep(0.35)
                 self.adb_client.tap(int(round(target_x)), int(round(target_y)))
             else:
-                pyautogui.click(clear_x, clear_y)
-                time.sleep(0.35)
                 pyautogui.click(target_x, target_y)
             self._invalidate_capture()
             img_config["last_used"] = time.time()
@@ -3382,7 +3466,7 @@ class AutoClicker:
             return
 
         if action == "resource_search":
-            level = min(8, max(1, int(self._current_task_settings().get("resource_level", 7))))
+            level = min(7, max(1, int(self._current_task_settings().get("resource_level", 7))))
             resource_tabs = {
                 "food": 550,
                 "wood": 715,
@@ -3407,13 +3491,13 @@ class AutoClicker:
             if self.uses_adb:
                 for _ in range(7):
                     self.adb_client.tap(plus_x, plus_y)
-                    self._interruptible_sleep(0.18)
+                    self._interruptible_sleep(0.35)
                     if self.stop_event.is_set() or self.stop_hotkey_pressed:
                         return False
                 self._interruptible_sleep(0.4)
-                for _ in range(8 - level):
+                for _ in range(7 - level):
                     self.adb_client.tap(minus_x, minus_y)
-                    self._interruptible_sleep(0.18)
+                    self._interruptible_sleep(0.35)
                     if self.stop_event.is_set() or self.stop_hotkey_pressed:
                         return False
                 self.adb_client.tap(int(round(target_x)), int(round(target_y)))
@@ -3425,13 +3509,13 @@ class AutoClicker:
             else:
                 for _ in range(7):
                     pyautogui.click(plus_x, plus_y)
-                    self._interruptible_sleep(0.18)
+                    self._interruptible_sleep(0.35)
                     if self.stop_event.is_set() or self.stop_hotkey_pressed:
                         return False
                 self._interruptible_sleep(0.4)
-                for _ in range(8 - level):
+                for _ in range(7 - level):
                     pyautogui.click(minus_x, minus_y)
-                    self._interruptible_sleep(0.18)
+                    self._interruptible_sleep(0.35)
                     if self.stop_event.is_set() or self.stop_hotkey_pressed:
                         return False
                 pyautogui.click(target_x, target_y)
@@ -3447,13 +3531,34 @@ class AutoClicker:
             return
 
         if action in {"zombie_search", "hivemind_search"}:
+            selected_level = None
+            if action == "hivemind_search":
+                selected_level = 7 if int(self._current_task_settings().get("level", 6) or 6) == 7 else 6
+                minus_x = int(round(target_x - 146 * display.scale_x))
+                plus_x = int(round(target_x + 144 * display.scale_x))
+                level_y = int(round(target_y - 76 * display.scale_y))
+                click = self.adb_client.tap if self.uses_adb else pyautogui.click
+                for _ in range(7):
+                    click(plus_x, level_y)
+                    self._interruptible_sleep(0.3)
+                    if self.stop_event.is_set() or self.stop_hotkey_pressed:
+                        return False
+                for _ in range(7 - selected_level):
+                    click(minus_x, level_y)
+                    self._interruptible_sleep(0.3)
+                    if self.stop_event.is_set() or self.stop_hotkey_pressed:
+                        return False
+                self.set_status_message(
+                    f"Коллективный разум: выбран уровень {selected_level}",
+                    force=True,
+                )
             if self.uses_adb:
                 self.adb_client.tap(int(round(target_x)), int(round(target_y)))
-                time.sleep(2.0)
+                self._interruptible_sleep(2.0)
                 frame = self.adb_client.screenshot_bgr()
             else:
                 pyautogui.click(target_x, target_y)
-                time.sleep(2.0)
+                self._interruptible_sleep(2.0)
                 width, height = pyautogui.size()
             self._invalidate_capture()
             no_result = None
@@ -3482,8 +3587,13 @@ class AutoClicker:
                 pyautogui.click(width // 2, int(round(height * 0.49)))
             self._invalidate_capture()
             img_config["last_used"] = time.time()
-            label = "зомби" if action == "zombie_search" else "коллективного разума"
-            self.set_status_message(f"Поиск {label}: используется сохранённый в игре уровень", force=True)
+            if action == "zombie_search":
+                self.set_status_message("Поиск зомби: используется сохранённый в игре уровень", force=True)
+            else:
+                self.set_status_message(
+                    f"Поиск коллективного разума уровня {selected_level}",
+                    force=True,
+                )
             self._interruptible_sleep(img_config.get("delay", self.sleep_found))
             return
 

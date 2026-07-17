@@ -19,6 +19,7 @@ from doomsdaybot.routines import (
     default_routine_tasks,
     upgrade_radar_runtime_metadata,
     upgrade_prize_hunt_metadata,
+    upgrade_repeatable_claim_metadata,
     upgrade_resource_runtime_metadata,
     upgrade_strict_runtime_metadata,
 )
@@ -29,6 +30,10 @@ DEFAULT_PROFILE = TRAINING_DIR / "Doomsday_Phoenix675_1280x720.zip"
 PROFILE_NAMESPACE = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
 SYSTEM_GROUP = "Системные окна"
 ACCOUNT_SWITCH_GROUP = "Переключение аккаунта"
+RESOURCE_RESULT_LEVEL_TEMPLATES = {
+    6: ("resource_level6_result.png", (800, 207, 885, 244)),
+    7: ("resource_level7_result.png", (894, 207, 984, 244)),
+}
 
 RESOURCE_DATA = {
     "food": {
@@ -460,6 +465,14 @@ DAILY_TASK_STEPS = {
             "vip_after_chest.png",
             (327, 291, 630, 333),
             (632, 308),
+            False,
+        ),
+        (
+            "receive_free",
+            "Получить бесплатную ежедневную VIP-награду",
+            "vip_again.png",
+            (638, 581, 875, 632),
+            (0, 0),
             False,
         ),
         (
@@ -992,6 +1005,7 @@ RESEARCH_STEPS = {
 }
 
 GATHERING_BOOST_STEPS = {
+    "active": ("FocusFarm_boost_active.png", (89, 125, 143, 181)),
     "open_bag": ("base_live_now.png", (837, 601, 919, 707)),
     "boost_category": ("bag.png", (0, 267, 165, 347)),
     "boost_8h": ("boosts.png", (606, 123, 725, 246)),
@@ -1102,7 +1116,7 @@ def build_profile(destination):
     manifest = {
         "format": "doomsday-training-profile",
         "format_version": 1,
-        "app_version": "3.1.8",
+        "app_version": "3.1.11",
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "source_screen": {"width": 1280, "height": 720},
         "routine_tasks": tasks,
@@ -1116,6 +1130,35 @@ def build_profile(destination):
         "images": [],
     }
     payloads = []
+
+    for level, (source_name, box) in RESOURCE_RESULT_LEVEL_TEMPLATES.items():
+        uid = str(uuid.uuid5(PROFILE_NAMESPACE, f"resource_result_level:{level}"))
+        entry_name = f"templates/{uid}.png"
+        source, crop = crop_image(source_name, box)
+        score = verify_crop(source, crop, True)
+        output_path = staging / f"resource_result_level_{level}.png"
+        if not cv2.imwrite(str(output_path), crop):
+            raise OSError(f"Could not write {output_path}")
+        level_image = image_config(
+            uid,
+            entry_name,
+            SYSTEM_GROUP,
+            f"Подтверждение найденного ресурса уровня {level}",
+            (0, 0),
+            True,
+            0.0,
+        )
+        level_image.update(
+            {
+                "enabled": False,
+                "observer_only": True,
+                "guard_only": True,
+                "confidence": 0.86,
+            }
+        )
+        manifest["images"].append(level_image)
+        payloads.append((output_path, entry_name))
+        print(f"{'resource_level':15s} {level!s:15s} score={score:.3f} size={crop.shape[1]}x{crop.shape[0]}")
 
     for step_id, description, source_name, box, offset, grayscale in SYSTEM_STEPS:
         uid = str(uuid.uuid5(PROFILE_NAMESPACE, f"system:{step_id}"))
@@ -1211,13 +1254,24 @@ def build_profile(destination):
                 ]
             if task_id == "alliance_donations" and step_id == "open_alliance":
                 configured_image["home_screen_marker"] = True
-            if task_id == "vip_rewards" and step_id in {"claim_chest", "dismiss_info"}:
+            if task_id == "vip_rewards" and step_id in {"claim_chest", "dismiss_info", "receive_free"}:
                 configured_image["allow_repeat"] = True
-                configured_image["block_seconds"] = 1.0 if step_id == "claim_chest" else 0.8
+                configured_image["block_seconds"] = 0.8 if step_id == "dismiss_info" else 1.0
+                configured_image["routine_priority"] = {
+                    "claim_chest": 20,
+                    "dismiss_info": 30,
+                    "receive_free": 40,
+                }[step_id]
+                if step_id == "receive_free":
+                    configured_image["completes_routine"] = True
+            if task_id == "vip_rewards" and step_id == "open_vip":
+                configured_image["routine_priority"] = 10
             if task_id == "vip_rewards" and step_id == "close_vip":
+                configured_image["routine_priority"] = 50
                 configured_image["skip_if_visible_uids"] = [
                     str(uuid.uuid5(PROFILE_NAMESPACE, "vip_rewards:claim_chest")),
                     str(uuid.uuid5(PROFILE_NAMESPACE, "vip_rewards:dismiss_info")),
+                    str(uuid.uuid5(PROFILE_NAMESPACE, "vip_rewards:receive_free")),
                 ]
             if task_id == "radar":
                 configured_image["allow_repeat"] = True
@@ -1438,7 +1492,7 @@ def build_profile(destination):
             queue_uid,
             queue_entry,
             group,
-            "Найти свободное учебное здание",
+            "Найти учебное здание через свободную очередь",
             (0, 0),
             False,
             0.8,
@@ -1681,6 +1735,7 @@ def build_profile(destination):
     boost_task = next(item for item in tasks if item["id"] == "gathering_boost")
     boost_group = boost_task["group"]
     boost_steps = (
+        ("active", "Усиление сбора уже активно", (0, 0), None),
         ("open_bag", "Открыть сумку", (0, 0), None),
         ("boost_category", "Открыть раздел усилений", (0, 0), None),
         ("boost_8h", "Выбрать усиление сбора на 8 часов", (0, 0), 8),
@@ -1699,7 +1754,12 @@ def build_profile(destination):
             raise OSError(f"Could not write {output_path}")
         configured_image = image_config(uid, entry_name, boost_group, description, offset, False, 0.8)
         configured_image["runtime_step"] = step_id
-        if step_id == "boost_category":
+        if step_id == "active":
+            configured_image["action"] = "observe"
+            configured_image["completes_routine"] = True
+            configured_image["confidence"] = 0.9
+            configured_image["routine_priority"] = 1
+        elif step_id == "boost_category":
             configured_image["requires_runtime_steps"] = ["open_bag"]
             configured_image["delay"] = 2.5
         elif step_id in {"boost_8h", "boost_24h"}:
@@ -1856,6 +1916,7 @@ def build_profile(destination):
     upgrade_strict_runtime_metadata(manifest["images"], tasks)
     upgrade_prize_hunt_metadata(manifest["images"], tasks)
     upgrade_radar_runtime_metadata(manifest["images"], tasks)
+    upgrade_repeatable_claim_metadata(manifest["images"], tasks)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("profile.json", json.dumps(manifest, ensure_ascii=False, indent=2))

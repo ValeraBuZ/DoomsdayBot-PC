@@ -45,6 +45,7 @@ DEFAULT_TASKS = (
 TASK_TIMEOUTS = {
     "game_login": 240.0,
     "vip_rewards": 60.0,
+    "alliance_donations": 160.0,
     "radar": 420.0,
     "mail_rewards": 75.0,
     "research": 90.0,
@@ -59,6 +60,7 @@ TASK_TIMEOUTS = {
     "wood": 75.0,
     "metal": 75.0,
     "oil": 75.0,
+    "collective_mind": 100.0,
 }
 
 
@@ -125,19 +127,29 @@ def _capture(client, path):
         return False
 
 
-def _task_settings(task_id, research_branch, resource_level):
+def _task_settings(task_id, research_branch, resource_level, collective_level):
     if task_id == "research":
         return {"branch": research_branch, "use_speedups": False}
     if task_id == "gathering_boost":
         return {"boost_hours": 8}
     if task_id in {"food", "wood", "metal", "oil"}:
         return {"resource_level": resource_level}
+    if task_id == "collective_mind":
+        return {"level": collective_level}
     if task_id.startswith("train_"):
         return {"highest_tier": True, "collect_finished": True}
     return {}
 
 
-def run_task(serial, account_key, task_id, output_dir, research_branch, resource_level):
+def run_task(
+    serial,
+    account_key,
+    task_id,
+    output_dir,
+    research_branch,
+    resource_level,
+    collective_level,
+):
     started_at = time.time()
     log_path = output_dir / f"{task_id}.log"
     screenshot_path = output_dir / f"{task_id}.png"
@@ -177,7 +189,7 @@ def run_task(serial, account_key, task_id, output_dir, research_branch, resource
                 result["error"] = "unknown task"
                 return result
             selected.setdefault("settings", {}).update(
-                _task_settings(task_id, research_branch, resource_level)
+                _task_settings(task_id, research_branch, resource_level, collective_level)
             )
             selected["timeout_seconds"] = max(
                 float(selected.get("timeout_seconds", 0.0) or 0.0),
@@ -242,6 +254,7 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--research-branch", choices=("economy", "war"), default="economy")
     parser.add_argument("--resource-level", type=int, default=7)
+    parser.add_argument("--collective-level", type=int, choices=(6, 7), default=6)
     parser.add_argument("--startup-settle-seconds", type=float, default=15.0)
     parser.add_argument("--keep-running", action="store_true")
     args = parser.parse_args()
@@ -302,7 +315,8 @@ def main():
                     "game_login",
                     account_dir,
                     args.research_branch,
-                    min(8, max(1, args.resource_level)),
+                    min(7, max(1, args.resource_level)),
+                    args.collective_level,
                 )
                 account_result["tasks"].append(login_result)
                 _write_json(output_root / "summary.json", summary)
@@ -317,7 +331,8 @@ def main():
                         task_id,
                         account_dir,
                         args.research_branch,
-                        min(8, max(1, args.resource_level)),
+                        min(7, max(1, args.resource_level)),
+                        args.collective_level,
                     )
                     account_result["tasks"].append(task_result)
                     _write_json(output_root / "summary.json", summary)

@@ -67,15 +67,35 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertEqual(by_id["mail_rewards"]["completion_runtime_step"], "claim_reports")
         self.assertEqual(by_id["completed_tasks"]["completion_runtime_step"], "scroll_top_4")
         self.assertEqual(by_id["fence_survivors"]["interval_minutes"], 15.0)
+        self.assertTrue(by_id["alliance_help"]["empty_home_is_success"])
         self.assertEqual(by_id["processing_factory"]["interval_minutes"], 180.0)
         self.assertTrue(by_id["processing_factory"]["complete_when_idle"])
         self.assertTrue(by_id["processing_contest"]["complete_when_idle"])
+        self.assertEqual(by_id["collective_mind"]["settings"]["level"], 6)
+        collective_level = next(
+            spec for spec in task_setting_specs("collective_mind") if spec["key"] == "level"
+        )
+        self.assertEqual(collective_level["choices"], ((6, "6"), (7, "7")))
+        for task_id in ("food", "wood", "metal", "oil"):
+            resource_level = next(
+                spec for spec in task_setting_specs(task_id) if spec["key"] == "resource_level"
+            )
+            self.assertEqual(resource_level["max"], 7)
 
     def test_resources_are_individually_selectable(self):
         tasks = default_routine_tasks()
         resources = [task for task in tasks if task.get("category") == "resources"]
         self.assertEqual([task["id"] for task in resources], ["food", "wood", "metal", "oil"])
         self.assertTrue(all(not task["enabled"] and task["uses_march"] for task in resources))
+
+    def test_resource_upgrade_clamps_legacy_level_to_seven(self):
+        tasks = default_routine_tasks()
+        oil = next(task for task in tasks if task["id"] == "oil")
+        oil["settings"]["resource_level"] = 8
+
+        upgrade_resource_runtime_metadata([], tasks)
+
+        self.assertEqual(oil["settings"]["resource_level"], 7)
 
     def test_normalization_repairs_values_and_merges_settings(self):
         tasks = normalize_routine_tasks([
@@ -94,11 +114,13 @@ class RoutineTaskTests(unittest.TestCase):
             },
         ])
         food = next(task for task in tasks if task["id"] == "food")
+        alliance_help = next(task for task in tasks if task["id"] == "alliance_help")
         custom = next(task for task in tasks if task["id"] == "custom_daily")
         self.assertEqual(food["group"], "Ферма еды")
         self.assertEqual(food["interval_minutes"], 0.1)
         self.assertEqual(food["timeout_seconds"], 30.0)
         self.assertEqual(food["settings"]["resource_level"], 8)
+        self.assertTrue(alliance_help["empty_home_is_success"])
         self.assertEqual(custom["name"], "Ежедневная награда")
 
     def test_healing_has_priority_when_selected(self):
@@ -215,6 +237,7 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertEqual(task["settings"]["max_donations"], 100)
         self.assertEqual(task["settings"]["max_project_checks"], 5)
         self.assertEqual(task["interval_minutes"], 20.0)
+        self.assertEqual(task["timeout_seconds"], 6.0)
 
     def test_repeatable_claims_guard_task_closing(self):
         namespace = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
@@ -222,12 +245,14 @@ class RoutineTaskTests(unittest.TestCase):
         donation_close_uid = str(uuid.uuid5(namespace, "alliance_donations:close_project"))
         vip_claim_uid = str(uuid.uuid5(namespace, "vip_rewards:claim_chest"))
         vip_dismiss_uid = str(uuid.uuid5(namespace, "vip_rewards:dismiss_info"))
+        vip_receive_uid = str(uuid.uuid5(namespace, "vip_rewards:receive_free"))
         vip_close_uid = str(uuid.uuid5(namespace, "vip_rewards:close_vip"))
         images = [
             {"uid": donate_uid},
             {"uid": donation_close_uid},
             {"uid": vip_claim_uid},
             {"uid": vip_dismiss_uid},
+            {"uid": vip_receive_uid},
             {"uid": vip_close_uid},
         ]
         tasks = default_routine_tasks()
@@ -241,9 +266,11 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertIn(donate_uid, by_uid[donation_close_uid]["skip_if_visible_uids"])
         self.assertTrue(by_uid[vip_claim_uid]["allow_repeat"])
         self.assertTrue(by_uid[vip_dismiss_uid]["allow_repeat"])
+        self.assertTrue(by_uid[vip_receive_uid]["allow_repeat"])
+        self.assertTrue(by_uid[vip_receive_uid]["completes_routine"])
         self.assertEqual(
             by_uid[vip_close_uid]["skip_if_visible_uids"],
-            [vip_claim_uid, vip_dismiss_uid],
+            [vip_claim_uid, vip_dismiss_uid, vip_receive_uid],
         )
         self.assertEqual(donation_task["settings"]["max_donations"], 100)
 
@@ -351,16 +378,24 @@ class RoutineTaskTests(unittest.TestCase):
         region_uid = str(uuid.uuid5(namespace, "wood:region"))
         icon_uid = str(uuid.uuid5(namespace, "wood:resource_icon"))
         search_uid = str(uuid.uuid5(namespace, "wood:search_button"))
-        images = [{"uid": region_uid}, {"uid": icon_uid}, {"uid": search_uid}]
+        gather_uid = str(uuid.uuid5(namespace, "wood:gather"))
+        images = [
+            {"uid": region_uid},
+            {"uid": icon_uid},
+            {"uid": search_uid},
+            {"uid": gather_uid},
+        ]
         tasks = [{"id": "wood", "timeout_seconds": 10.0}]
 
-        self.assertEqual(upgrade_resource_runtime_metadata(images, tasks), 3)
+        self.assertEqual(upgrade_resource_runtime_metadata(images, tasks), 4)
         self.assertEqual(images[0]["action"], "open_world_search")
         self.assertEqual(images[0]["runtime_step"], "world_search")
         self.assertEqual(images[1]["requires_runtime_steps"], ["world_search"])
         self.assertEqual(images[2]["requires_runtime_steps"], ["world_search"])
         self.assertTrue(images[1]["allow_runtime_resume"])
         self.assertTrue(runtime_step_is_ready(images[1], set()))
+        self.assertEqual(images[3]["expected_result_level_setting"], "resource_level")
+        self.assertEqual(set(images[3]["result_level_template_uids"]), {"6", "7"})
         self.assertEqual(tasks[0]["timeout_seconds"], 30.0)
 
     def test_healing_training_and_hunts_are_upgraded_to_strict_sequences(self):
@@ -387,6 +422,8 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertEqual(upgrade_strict_runtime_metadata(images, tasks), 8)
         by_uid = {image["uid"]: image for image in images}
         self.assertNotIn("requires_runtime_steps", by_uid[training_uids["building"]])
+        self.assertTrue(by_uid[training_uids["queue"]]["repeat_runtime_step"])
+        self.assertTrue(by_uid[training_uids["queue"]]["dynamic_building_search"])
         self.assertEqual(
             by_uid[training_uids["train"]]["requires_runtime_steps"],
             ["building"],
@@ -495,13 +532,13 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertTrue(prize_hunt_branch_allows_image(exit_image, False))
         self.assertFalse(prize_hunt_branch_allows_image(again_image, False))
 
-    def test_hunt_levels_are_left_to_the_game_selection(self):
+    def test_zombie_level_is_preserved_but_collective_level_is_selectable(self):
         zombie_keys = {spec["key"] for spec in task_setting_specs("zombie_hunt")}
         collective_keys = {spec["key"] for spec in task_setting_specs("collective_mind")}
 
         self.assertNotIn("level_min", zombie_keys)
         self.assertNotIn("level_max", zombie_keys)
-        self.assertNotIn("level", collective_keys)
+        self.assertIn("level", collective_keys)
 
     def test_strict_sequence_can_resume_from_visible_later_step(self):
         image = {

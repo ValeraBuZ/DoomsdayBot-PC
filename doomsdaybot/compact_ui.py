@@ -28,6 +28,20 @@ def _center(window, width, height):
     window.geometry(f"{width}x{height}+{x}+{y}")
 
 
+def _bind_numeric_wheel(widget, variable, minimum, maximum, increment=1):
+    def on_wheel(event):
+        try:
+            current = float(variable.get())
+            direction = 1 if event.delta > 0 else -1
+            value = min(float(maximum), max(float(minimum), current + direction * float(increment)))
+            variable.set(int(value) if float(increment).is_integer() else value)
+        except (tk.TclError, TypeError, ValueError):
+            return "break"
+        return "break"
+
+    widget.bind("<MouseWheel>", on_wheel)
+
+
 class TaskSettingsDialog:
     def __init__(self, parent, bot, task, refresh):
         self.parent = parent
@@ -74,15 +88,28 @@ class TaskSettingsDialog:
                     textvariable=variable,
                     width=12,
                 )
+                _bind_numeric_wheel(
+                    widget,
+                    variable,
+                    spec.get("min", 0),
+                    spec.get("max", 1000000),
+                )
             widget.grid(row=row, column=1, sticky="w", pady=5)
             self.vars[spec["key"]] = (variable, spec)
             row += 1
 
         ttk.Label(form, text="Повтор, минут").grid(row=row, column=0, sticky="w", padx=(0, 12), pady=5)
         self.interval_var = tk.DoubleVar(value=float(self.task.get("interval_minutes", 1.0)))
-        ttk.Spinbox(form, from_=0.1, to=1440, increment=0.5, textvariable=self.interval_var, width=12).grid(
-            row=row, column=1, sticky="w", pady=5
+        interval_spin = ttk.Spinbox(
+            form,
+            from_=0.1,
+            to=1440,
+            increment=0.5,
+            textvariable=self.interval_var,
+            width=12,
         )
+        interval_spin.grid(row=row, column=1, sticky="w", pady=5)
+        _bind_numeric_wheel(interval_spin, self.interval_var, 0.1, 1440, 0.5)
 
         group = effective_task_group(self.task)
         templates = [image for image in self.bot.search_images if image.get("group") == group]
@@ -293,7 +320,7 @@ def build_compact_ui(root, bot):
     for widget in root.winfo_children():
         widget.destroy()
 
-    root.title("Doomsday Routine")
+    root.title("Doomsday Bot")
     root.geometry("760x820")
     root.minsize(680, 650)
     root.configure(bg="#f3f1eb")
@@ -317,8 +344,13 @@ def build_compact_ui(root, bot):
 
     header = ttk.Frame(outer)
     header.pack(fill=tk.X)
-    ttk.Label(header, text="DOOMSDAY ROUTINE", style="CompactTitle.TLabel").pack(side=tk.LEFT)
+    ttk.Label(header, text="DOOMSDAY BOT", style="CompactTitle.TLabel").pack(side=tk.LEFT)
     ttk.Label(header, text=f"v{getattr(bot, 'app_version', '3.0.0')} · LDPlayer").pack(side=tk.RIGHT)
+    ttk.Label(
+        outer,
+        text="Отметьте нужные действия галочками. Выполняются только отмеченные пункты.",
+        foreground="#5f665f",
+    ).pack(fill=tk.X, pady=(4, 0))
 
     account_frame = ttk.LabelFrame(outer, text="Аккаунт", padding=9)
     account_frame.pack(fill=tk.X, pady=(12, 8))
@@ -348,10 +380,21 @@ def build_compact_ui(root, bot):
     scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
     content.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
     canvas.bind("<Configure>", lambda event: canvas.itemconfigure(window_id, width=event.width))
-    canvas.bind("<MouseWheel>", lambda event: canvas.yview_scroll(int(-event.delta / 120), "units"))
+    def scroll_tasks(event):
+        units = -1 if event.delta > 0 else 1
+        canvas.yview_scroll(units * 3, "units")
+        return "break"
+
+    root.bind("<MouseWheel>", scroll_tasks)
 
     def toggle_task(task):
         value = bool(task_vars[task["id"]].get())
+        if task["id"] == "research":
+            task.setdefault("settings", {})["branch"] = (
+                task.get("settings", {}).get("branch", "any") if value else "off"
+            )
+            if value and task["settings"]["branch"] == "off":
+                task["settings"]["branch"] = "any"
         bot.set_routine_enabled(task["id"], value)
         refresh_all()
 
@@ -382,6 +425,51 @@ def build_compact_ui(root, bot):
                     variable=variable,
                     command=lambda current=task: toggle_task(current),
                 ).pack(side=tk.LEFT)
+                if task["id"] == "research":
+                    branch_labels = {
+                        "off": "Отключено",
+                        "economy": "Экономика",
+                        "war": "Война",
+                        "any": "Любое",
+                    }
+                    reverse_branches = {label: key for key, label in branch_labels.items()}
+                    branch_var = tk.StringVar(
+                        value=branch_labels.get(task.get("settings", {}).get("branch", "off"), "Отключено")
+                    )
+
+                    def select_research_branch(_event=None, current=task, variable=branch_var):
+                        branch = reverse_branches.get(variable.get(), "off")
+                        current.setdefault("settings", {})["branch"] = branch
+                        current["enabled"] = branch != "off"
+                        bot.groups[effective_task_group(current)] = current["enabled"]
+                        bot.save_config()
+                        refresh_all()
+
+                    branch_combo = ttk.Combobox(
+                        cell,
+                        textvariable=branch_var,
+                        values=list(reverse_branches),
+                        state="readonly",
+                        width=11,
+                    )
+                    branch_combo.pack(side=tk.LEFT, padx=(6, 0))
+                    branch_combo.bind("<<ComboboxSelected>>", select_research_branch)
+                elif task["id"] == "collective_mind":
+                    level_var = tk.StringVar(value=str(task.get("settings", {}).get("level", 6)))
+
+                    def select_collective_level(_event=None, current=task, variable=level_var):
+                        current.setdefault("settings", {})["level"] = 7 if variable.get() == "7" else 6
+                        bot.save_config()
+
+                    level_combo = ttk.Combobox(
+                        cell,
+                        textvariable=level_var,
+                        values=("6", "7"),
+                        state="readonly",
+                        width=3,
+                    )
+                    level_combo.pack(side=tk.LEFT, padx=(6, 0))
+                    level_combo.bind("<<ComboboxSelected>>", select_collective_level)
                 group = effective_task_group(task)
                 template_count = len([image for image in bot.search_images if image.get("group") == group])
                 if task_setting_specs(task["id"]):
@@ -398,7 +486,7 @@ def build_compact_ui(root, bot):
 
     control = ttk.Frame(outer)
     control.pack(fill=tk.X, pady=(10, 6))
-    start_button = ttk.Button(control, text="Запустить выбранное", style="Primary.TButton", command=bot.start_routines)
+    start_button = ttk.Button(control, text="Запустить отмеченные", style="Primary.TButton", command=bot.start_routines)
     start_button.pack(side=tk.LEFT)
     pause_button = ttk.Button(control, text="Пауза", command=bot.toggle_pause)
     pause_button.pack(side=tk.LEFT, padx=6)
@@ -418,7 +506,17 @@ def build_compact_ui(root, bot):
         bot.routine_march_deadlines = bot.routine_march_deadlines[:bot.routine_max_marches]
         bot.save_config()
 
-    ttk.Spinbox(marches, from_=1, to=5, width=3, textvariable=marches_var, command=save_marches).pack(side=tk.LEFT)
+    marches_spin = ttk.Spinbox(
+        marches,
+        from_=1,
+        to=5,
+        width=3,
+        textvariable=marches_var,
+        command=save_marches,
+    )
+    marches_spin.pack(side=tk.LEFT)
+    _bind_numeric_wheel(marches_spin, marches_var, 1, 5)
+    marches_spin.bind("<FocusOut>", lambda _event: save_marches())
 
     adb_frame = ttk.LabelFrame(outer, text="ADB и экран", padding=7)
     adb_frame.pack(fill=tk.X, pady=4)
