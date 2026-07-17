@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -19,6 +20,7 @@ DIST_DIR = DIST_ROOT / APP_NAME
 ARCHIVE_PATH = DIST_ROOT / f"{APP_NAME}.zip"
 CONFIG_PATH = PROJECT_ROOT / "config.json"
 EXAMPLE_CONFIG_PATH = PROJECT_ROOT / "config.example.json"
+IMG_DIR = PROJECT_ROOT / "img"
 MANUAL_PATH = PROJECT_ROOT / "DoomsdayBot_Инструкция.pdf"
 
 
@@ -29,12 +31,9 @@ from pathlib import Path
 
 
 project_root = Path.cwd()
-img_dir = project_root / "img"
 config_file = project_root / "config.json"
 datas = []
 
-if img_dir.exists():
-    datas.append((str(img_dir), "img"))
 if config_file.exists():
     datas.append((str(config_file), "."))
 
@@ -115,11 +114,12 @@ def run_pyinstaller():
 
 
 def finalize_portable_layout(preserve_runtime=True):
-    (STAGE_DIR / "img").mkdir(parents=True, exist_ok=True)
     (STAGE_DIR / "backups" / "config").mkdir(parents=True, exist_ok=True)
     stage_runtime_config()
+    stage_templates()
     if preserve_runtime:
         preserve_runtime_data()
+    validate_portable_layout()
     if MANUAL_PATH.exists():
         shutil.copy2(MANUAL_PATH, STAGE_DIR / MANUAL_PATH.name)
     (STAGE_DIR / "START_HERE.txt").write_text(
@@ -146,6 +146,40 @@ def stage_runtime_config():
     source = CONFIG_PATH if CONFIG_PATH.exists() else EXAMPLE_CONFIG_PATH
     if source.exists():
         shutil.copy2(source, STAGE_DIR / "config.json")
+
+
+def stage_templates():
+    if not IMG_DIR.exists():
+        raise FileNotFoundError(f"Template directory is missing: {IMG_DIR}")
+    shutil.copytree(IMG_DIR, STAGE_DIR / "img", dirs_exist_ok=True)
+
+
+def validate_portable_layout():
+    image_dir = STAGE_DIR / "img"
+    png_count = sum(1 for _path in image_dir.rglob("*.png"))
+    if png_count == 0:
+        raise RuntimeError(f"Portable build contains no PNG templates: {image_dir}")
+
+    config_path = STAGE_DIR / "config.json"
+    if not config_path.exists():
+        raise FileNotFoundError(f"Portable config is missing: {config_path}")
+
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    missing = []
+    for image in config.get("images", []):
+        configured_path = Path(str(image.get("path") or ""))
+        resolved_path = configured_path if configured_path.is_absolute() else STAGE_DIR / configured_path
+        if not resolved_path.is_file():
+            missing.append(str(image.get("description") or configured_path))
+
+    if missing:
+        preview = ", ".join(missing[:10])
+        suffix = f" and {len(missing) - 10} more" if len(missing) > 10 else ""
+        raise RuntimeError(
+            f"Portable build is missing {len(missing)} configured templates: {preview}{suffix}"
+        )
+
+    print(f"Portable templates verified: {png_count} PNG files")
 
 
 def preserve_runtime_data():
