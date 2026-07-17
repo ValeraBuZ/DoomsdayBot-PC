@@ -33,13 +33,10 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item config.example.json config.json
-          python build_portable.py --clean-runtime
-          if (-not (Test-Path dist/DoomsdayBotPortable/config.json)) {
-            Copy-Item config.example.json dist/DoomsdayBotPortable/config.json
-          }
           python tools/install_training_profile.py `
             --profile profiles/Doomsday_PC_1280x720.zip `
-            --install-root dist/DoomsdayBotPortable
+            --install-root .
+          python build_portable.py --clean-runtime
           Remove-Item dist/DoomsdayBotPortable.zip -Force
           Compress-Archive `
             -Path dist/DoomsdayBotPortable `
