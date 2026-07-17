@@ -5,6 +5,7 @@ import uuid
 from doomsdaybot.routines import (
     completed_runtime_steps_for_image,
     default_routine_tasks,
+    effective_active_marches,
     effective_task_group,
     image_is_allowed_for_routine,
     is_task_effectively_enabled,
@@ -327,6 +328,12 @@ class RoutineTaskTests(unittest.TestCase):
             routine_march_context_key("ADB", "emulator-5564", "phoenix"),
         )
 
+    def test_confirmed_march_is_kept_while_observer_catches_up(self):
+        self.assertEqual(effective_active_marches(0, 1, 1, 100.0, 220.0), 1)
+        self.assertEqual(effective_active_marches(4, 1, 5, 100.0, 220.0), 5)
+        self.assertEqual(effective_active_marches(0, 1, 1, 221.0, 220.0), 0)
+        self.assertEqual(effective_active_marches(None, 2, 4, 100.0, 220.0), 2)
+
     def test_missing_march_button_defers_after_squad_screen_grace(self):
         task = {"uses_march": True}
         self.assertFalse(no_available_squad_wait_exceeded(task, {"create_squad"}, 7.9))
@@ -424,6 +431,9 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertNotIn("requires_runtime_steps", by_uid[training_uids["building"]])
         self.assertTrue(by_uid[training_uids["queue"]]["repeat_runtime_step"])
         self.assertTrue(by_uid[training_uids["queue"]]["dynamic_building_search"])
+        self.assertEqual(by_uid[training_uids["queue"]]["limit_key"], "max_queue_checks")
+        self.assertTrue(by_uid[training_uids["queue"]]["defer_when_limit_reached"])
+        self.assertEqual(tasks[0]["settings"]["max_queue_checks"], 4)
         self.assertEqual(
             by_uid[training_uids["train"]]["requires_runtime_steps"],
             ["building"],

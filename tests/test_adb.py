@@ -130,6 +130,20 @@ class AdbClientTests(unittest.TestCase):
         self.assertEqual(calls[0][0], ["adb.exe", "devices", "-l"])
         self.assertEqual(client.serial, "emulator-5556")
 
+    def test_restart_server_clears_stale_daemon_without_serial(self):
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append((command, kwargs))
+            return FakeResult()
+
+        client = self.make_client(runner)
+        client.restart_server()
+
+        self.assertEqual(calls[0][0], ["adb.exe", "kill-server"])
+        self.assertEqual(calls[1][0], ["adb.exe", "start-server"])
+        self.assertEqual(client.serial, "emulator-5556")
+
     def test_ui_xml_is_read_and_removed(self):
         calls = []
 

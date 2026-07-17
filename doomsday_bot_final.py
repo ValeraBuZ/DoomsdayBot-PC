@@ -44,6 +44,7 @@ from doomsdaybot.matching import TemplateCache
 from doomsdaybot.routines import (
     completed_runtime_steps_for_image,
     default_routine_tasks,
+    effective_active_marches,
     effective_task_group,
     image_is_allowed_for_routine,
     is_task_effectively_enabled,
@@ -68,7 +69,7 @@ from doomsdaybot.state import BotState, compute_runtime_seconds
 from doomsdaybot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.1.11"
+APP_VERSION = "3.1.12"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -587,6 +588,8 @@ class AutoClicker:
         self.routine_march_deadlines = []
         self.routine_march_context = ""
         self.routine_deployment_blocked_until = 0.0
+        self.routine_confirmed_march_floor = 0
+        self.routine_march_observer_grace_until = 0.0
         self.routine_next_run = {}
         self.current_routine_index = 0
         self.current_routine_task_id = None
@@ -2166,6 +2169,8 @@ class AutoClicker:
         self.routine_march_context = context
         self.routine_march_deadlines = []
         self.routine_deployment_blocked_until = 0.0
+        self.routine_confirmed_march_floor = 0
+        self.routine_march_observer_grace_until = 0.0
         return True
 
     def get_active_marches(self, now=None):
@@ -2176,7 +2181,16 @@ class AutoClicker:
             self.routine_march_deadlines = active[:self.routine_max_marches]
             self.save_config()
         observed = self._detect_observed_marches()
-        return observed if observed is not None else len(self.routine_march_deadlines)
+        active_count = effective_active_marches(
+            observed,
+            len(self.routine_march_deadlines),
+            self.routine_confirmed_march_floor,
+            now,
+            self.routine_march_observer_grace_until,
+        )
+        if now >= self.routine_march_observer_grace_until:
+            self.routine_confirmed_march_floor = 0
+        return min(self.routine_max_marches, active_count)
 
     def _detect_observed_marches(self):
         observers = [
@@ -2223,6 +2237,8 @@ class AutoClicker:
 
     def reset_routine_marches(self):
         self.routine_march_deadlines = []
+        self.routine_confirmed_march_floor = 0
+        self.routine_march_observer_grace_until = 0.0
         self.save_config()
         self.set_status_message(
             self.tr('routine_marches', active=0, maximum=self.routine_max_marches),
@@ -2231,11 +2247,23 @@ class AutoClicker:
 
     def _register_routine_march(self, task, now=None):
         now = time.time() if now is None else float(now)
-        self.get_active_marches(now)
-        if len(self.routine_march_deadlines) >= self.routine_max_marches:
+        active_count = self.get_active_marches(now)
+        if active_count >= self.routine_max_marches:
             return False
         duration = max(1.0, float(task.get("march_duration_minutes", 30.0)))
         self.routine_march_deadlines.append(now + duration * 60.0)
+        self.routine_confirmed_march_floor = min(
+            self.routine_max_marches,
+            max(len(self.routine_march_deadlines), active_count + 1),
+        )
+        self.routine_march_observer_grace_until = max(
+            self.routine_march_observer_grace_until,
+            now + 120.0,
+        )
+        logger.info(
+            "Confirmed march reserved: active=%s, observer grace=120 sec",
+            self.routine_confirmed_march_floor,
+        )
         self.save_config()
         return True
 
@@ -2571,14 +2599,46 @@ class AutoClicker:
         retry_delay = 60.0
         self.routine_deployment_blocked_until = now + retry_delay
         self.routine_next_run[task["id"]] = now + retry_delay
-        logger.warning(
-            "Routine %s reached the squad screen without an available squad; retrying in %.0f seconds",
+        logger.info(
+            "Routine %s reached the squad screen while every squad is busy; retrying in %.0f seconds",
             task.get("id"),
             retry_delay,
         )
         self._return_to_main_screen(max_back_steps=3)
         self.set_status_message(
-            "Нет свободных отрядов. Походы будут проверены снова через 60 сек",
+            "Все отряды заняты походами или лагерем. Повтор через 60 сек",
+            force=True,
+        )
+        self.current_routine_index = (self.current_routine_index + 1) % len(self.routine_tasks)
+        self.current_routine_task_id = None
+        self.routine_current_had_action = False
+        self.routine_current_action_count = 0
+        self.routine_action_counts = {}
+        self.routine_completed_steps = set()
+        self.routine_idle_confirmation_count = 0
+        self.routine_home_recovery_attempted = False
+
+    def _defer_current_routine_unavailable(self, reason, now=None):
+        now = time.time() if now is None else float(now)
+        task = self.get_routine_task(self.current_routine_task_id)
+        if not task:
+            self.current_routine_task_id = None
+            return
+
+        retry_delay = max(60.0, no_action_retry_delay(task))
+        self.routine_next_run[task["id"]] = now + retry_delay
+        logger.info(
+            "Routine %s is temporarily unavailable (%s); retrying in %.0f seconds",
+            task.get("id"),
+            reason,
+            retry_delay,
+        )
+        self._return_to_main_screen(
+            max_back_steps=5,
+            require_settlement=routine_requires_settlement(task),
+        )
+        self.set_status_message(
+            f"{self.get_routine_task_name(task)}: сейчас недоступно. Повтор через {int(retry_delay)} сек",
             force=True,
         )
         self.current_routine_index = (self.current_routine_index + 1) % len(self.routine_tasks)
@@ -3164,7 +3224,13 @@ class AutoClicker:
                                                 force=True,
                                             )
                                         if limit > 0 and self.routine_action_counts[limit_key] >= limit:
-                                            self._finish_current_routine(self.routine_last_action_time)
+                                            if img_config.get("defer_when_limit_reached", False):
+                                                self._defer_current_routine_unavailable(
+                                                    limit_key,
+                                                    self.routine_last_action_time,
+                                                )
+                                            else:
+                                                self._finish_current_routine(self.routine_last_action_time)
                                             refresh_after_action = True
                                     completion_uid = current_routine_task.get("completion_uid") or ""
                                     if (

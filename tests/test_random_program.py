@@ -1,7 +1,12 @@
 import random
 import unittest
 
-from tools.run_random_program import MARCH_TASKS, _random_program, _task_failures_from_log
+from tools.run_random_program import (
+    MARCH_TASKS,
+    _busy_tasks_from_log,
+    _random_program,
+    _task_failures_from_log,
+)
 
 
 class RandomProgramTests(unittest.TestCase):
@@ -18,10 +23,12 @@ class RandomProgramTests(unittest.TestCase):
             (
                 "Routine food timed out without actions; retrying",
                 "Routine oil reached the squad screen without an available squad; retrying",
+                "Routine train_shooters is temporarily unavailable (max_queue_checks); retrying",
             )
         )
 
-        self.assertEqual(_task_failures_from_log(log_text), ["food", "oil"])
+        self.assertEqual(_task_failures_from_log(log_text), ["food"])
+        self.assertEqual(_busy_tasks_from_log(log_text), ["oil", "train_shooters"])
 
 
 if __name__ == "__main__":

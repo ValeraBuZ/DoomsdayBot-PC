@@ -154,6 +154,10 @@ class AdbClient:
         original_serial = self.serial
         self.serial = ""
         try:
+            try:
+                self._run(["kill-server"], timeout=10)
+            except AdbError:
+                pass
             self._run(["start-server"], timeout=10)
         finally:
             self.serial = original_serial

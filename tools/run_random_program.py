@@ -49,7 +49,11 @@ MARCH_TASKS = (
 )
 TASK_FAILURE_PATTERNS = (
     r"Routine ([a-z0-9_]+) timed out without actions",
+)
+BUSY_SQUAD_PATTERNS = (
+    r"Routine ([a-z0-9_]+) reached the squad screen while every squad is busy",
     r"Routine ([a-z0-9_]+) reached the squad screen without an available squad",
+    r"Routine ([a-z0-9_]+) is temporarily unavailable \(max_queue_checks\)",
 )
 
 
@@ -70,6 +74,13 @@ def _task_failures_from_log(log_text):
     for pattern in TASK_FAILURE_PATTERNS:
         failures.update(re.findall(pattern, log_text))
     return sorted(failures)
+
+
+def _busy_tasks_from_log(log_text):
+    busy = set()
+    for pattern in BUSY_SQUAD_PATTERNS:
+        busy.update(re.findall(pattern, log_text))
+    return sorted(busy)
 
 
 def _configure_program(bot, selected_ids, rng):
@@ -102,6 +113,7 @@ def _configure_program(bot, selected_ids, rng):
 
 def _launch_with_adb(ldconsole, instance, settle_seconds):
     for attempt in range(2):
+        AdbClient(serial="").restart_server()
         launch = _run_hidden([ldconsole, "launch", "--index", instance.index], timeout=30)
         if launch.returncode != 0:
             error = launch.stderr.strip() or "LDPlayer launch failed"
@@ -228,6 +240,7 @@ def run_program(instance, selected_ids, seed, output_dir, timeout_seconds, settl
         handler.flush()
         log_text = log_path.read_text(encoding="utf-8", errors="replace")
         result["task_failures"] = _task_failures_from_log(log_text)
+        result["busy_squad_tasks"] = _busy_tasks_from_log(log_text)
         if (
             not result["missing_tasks"]
             and not result["unexpected_groups"]

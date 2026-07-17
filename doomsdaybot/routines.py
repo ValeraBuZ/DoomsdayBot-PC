@@ -327,7 +327,7 @@ DEFAULT_ROUTINE_TASKS = (
         "timeout_seconds": 12.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
-        "settings": {"highest_tier": True, "collect_finished": True},
+        "settings": {"highest_tier": True, "collect_finished": True, "max_queue_checks": 4},
     },
     {
         "id": "train_riders",
@@ -341,7 +341,7 @@ DEFAULT_ROUTINE_TASKS = (
         "timeout_seconds": 12.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
-        "settings": {"highest_tier": True, "collect_finished": True},
+        "settings": {"highest_tier": True, "collect_finished": True, "max_queue_checks": 4},
     },
     {
         "id": "train_shooters",
@@ -355,7 +355,7 @@ DEFAULT_ROUTINE_TASKS = (
         "timeout_seconds": 12.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
-        "settings": {"highest_tier": True, "collect_finished": True},
+        "settings": {"highest_tier": True, "collect_finished": True, "max_queue_checks": 4},
     },
     {
         "id": "train_vehicles",
@@ -369,7 +369,7 @@ DEFAULT_ROUTINE_TASKS = (
         "timeout_seconds": 12.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
-        "settings": {"highest_tier": True, "collect_finished": True},
+        "settings": {"highest_tier": True, "collect_finished": True, "max_queue_checks": 4},
     },
     {
         "id": "prize_hunt",
@@ -653,6 +653,17 @@ def routine_march_context_key(input_backend, adb_serial, account_id):
     return f"{backend}:{serial}:{account}"
 
 
+def effective_active_marches(observed, estimated, confirmed_floor, now, grace_until):
+    """Keep newly confirmed marches occupied while the game counter catches up."""
+    estimated = max(0, int(estimated))
+    if observed is None:
+        return estimated
+    observed = max(0, int(observed))
+    if float(now) < float(grace_until):
+        return max(observed, estimated, max(0, int(confirmed_floor)))
+    return observed
+
+
 def no_available_squad_wait_exceeded(task, completed_steps, idle_seconds, grace_seconds=8.0):
     """Detect a squad screen that never exposes the final march button."""
     completed = {str(step) for step in completed_steps}
@@ -823,6 +834,8 @@ def upgrade_strict_runtime_metadata(images, tasks):
             if task_id.startswith("train_") and step_id == "queue":
                 image["repeat_runtime_step"] = True
                 image["dynamic_building_search"] = True
+                image["limit_key"] = "max_queue_checks"
+                image["defer_when_limit_reached"] = True
             image.pop("requires_runtime_steps", None)
             selected_training_building = (
                 task_id.startswith("train_") and step_id == "building"
@@ -838,6 +851,8 @@ def upgrade_strict_runtime_metadata(images, tasks):
                 20.0,
                 float(task.get("timeout_seconds", 0.0) or 0.0),
             )
+        if str(task.get("id") or "").startswith("train_"):
+            task.setdefault("settings", {}).setdefault("max_queue_checks", 4)
 
     # Claiming a main mission can move the game directly to the daily tab.
     # Allow the first guarded swipe to resume from that screen even when the
