@@ -982,6 +982,9 @@ RESEARCH_STEPS = {
     "guard_source": "research_lab_radial.png",
     "guard_box": (526, 183, 690, 234),
     "research_target": (755, 475),
+    "alternate_guards": (
+        ("zZuB1_research_radial.png", (526, 183, 690, 234), (755, 475)),
+    ),
     "menu_source": "research_menu.png",
     "menu_box": (430, 18, 850, 62),
     "confirm_source": "research_detail.png",
@@ -1090,7 +1093,6 @@ def build_profile(destination):
     tasks = default_routine_tasks()
     for task in tasks:
         if task["id"] in RESOURCE_DATA:
-            task["enabled"] = True
             task["timeout_seconds"] = 30.0
             task["march_duration_minutes"] = 240.0
         elif task["id"] == "prize_hunt":
@@ -1099,7 +1101,7 @@ def build_profile(destination):
     manifest = {
         "format": "doomsday-training-profile",
         "format_version": 1,
-        "app_version": "3.1.7",
+        "app_version": "3.1.8",
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "source_screen": {"width": 1280, "height": 720},
         "routine_tasks": tasks,
@@ -1354,7 +1356,7 @@ def build_profile(destination):
                         {
                             "routine_priority": 50 + scroll_index,
                             "requires_runtime_steps": [
-                                "select_daily" if scroll_index == 1 else f"scroll_daily_{scroll_index - 1}"
+                                "open_tasks" if scroll_index == 1 else f"scroll_daily_{scroll_index - 1}"
                             ],
                             "action": "swipe",
                             "swipe_from": [900, 600],
@@ -1364,6 +1366,8 @@ def build_profile(destination):
                             "orb_match_threshold": 3,
                         }
                     )
+                    if scroll_index == 1:
+                        configured_image["implied_runtime_steps"] = ["select_daily"]
                 elif step_id.startswith("scroll_top_"):
                     scroll_index = int(step_id.rsplit("_", 1)[1])
                     configured_image.update(
@@ -1531,6 +1535,10 @@ def build_profile(destination):
     research_group = "Исследования"
     research_task["group"] = research_group
     research_guard_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "research:lab"))
+    research_alternate_guard_uids = [
+        str(uuid.uuid5(PROFILE_NAMESPACE, f"research:lab_alternate_{index}"))
+        for index, _alternate in enumerate(RESEARCH_STEPS.get("alternate_guards", ()), start=1)
+    ]
 
     research_queue_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "research:queue"))
     research_queue_entry = f"templates/{research_queue_uid}.png"
@@ -1553,6 +1561,7 @@ def build_profile(destination):
             "allow_repeat": True,
             "block_seconds": 0.7,
             "skip_if_uid_visible": research_guard_uid,
+            "skip_if_visible_uids": [research_guard_uid, *research_alternate_guard_uids],
         }
     )
     manifest["images"].append(research_queue_image)
@@ -1581,6 +1590,38 @@ def build_profile(destination):
     )
     payloads.append((research_guard_output, research_guard_entry))
     print(f"{'research':15s} {'lab':15s} score={score:.3f} size={crop.shape[1]}x{crop.shape[0]}")
+
+    for alternate_index, alternate_guard in enumerate(
+        RESEARCH_STEPS.get("alternate_guards", ()),
+        start=1,
+    ):
+        source_name, alternate_box, alternate_target = alternate_guard
+        alternate_uid = research_alternate_guard_uids[alternate_index - 1]
+        alternate_entry = f"templates/{alternate_uid}.png"
+        source, crop = crop_image(source_name, alternate_box)
+        score = verify_crop(source, crop, False)
+        alternate_output = staging / f"research_lab_alternate_{alternate_index}.png"
+        if not cv2.imwrite(str(alternate_output), crop):
+            raise OSError(f"Could not write {alternate_output}")
+        left, top, right, bottom = alternate_box
+        center = ((left + right) // 2, (top + bottom) // 2)
+        target_x, target_y = alternate_target
+        manifest["images"].append(
+            image_config(
+                alternate_uid,
+                alternate_entry,
+                research_group,
+                "Открыть личные исследования (лаборатория младшего уровня)",
+                (target_x - center[0], target_y - center[1]),
+                False,
+                0.8,
+            )
+        )
+        payloads.append((alternate_output, alternate_entry))
+        print(
+            f"{'research':15s} {f'lab_alt_{alternate_index}':15s} "
+            f"score={score:.3f} size={crop.shape[1]}x{crop.shape[0]}"
+        )
 
     research_menu_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "research:select"))
     research_menu_entry = f"templates/{research_menu_uid}.png"
@@ -1815,6 +1856,24 @@ def install_profile(profile_path, install_root):
     if not config_path.exists():
         raise FileNotFoundError(config_path)
     config = json.loads(config_path.read_text(encoding="utf-8"))
+    preserved_runtime = {
+        key: deepcopy(config[key])
+        for key in (
+            "scale_enabled",
+            "input_backend",
+            "adb_serial",
+            "adb_path",
+            "account_profiles",
+            "current_account_id",
+            "account_rotation_enabled",
+        )
+        if key in config
+    }
+    existing_tasks = {
+        task.get("id"): task
+        for task in config.get("routine_tasks", [])
+        if task.get("id")
+    }
 
     with zipfile.ZipFile(profile_path, "r") as archive:
         manifest = json.loads(archive.read("profile.json").decode("utf-8"))
@@ -1839,7 +1898,11 @@ def install_profile(profile_path, install_root):
             installed["path"] = str(target_path.relative_to(install_root))
             config["images"].append(installed)
 
-    config["routine_tasks"] = manifest["routine_tasks"]
+    config["routine_tasks"] = deepcopy(manifest["routine_tasks"])
+    for task in config["routine_tasks"]:
+        existing = existing_tasks.get(task["id"], {})
+        task["enabled"] = existing.get("enabled", task.get("enabled", False))
+        task["settings"] = deepcopy(existing.get("settings", task.get("settings", {})))
     config["routine_max_marches"] = manifest["routine_max_marches"]
     config["routine_march_deadlines"] = []
     config["routine_next_run"] = {}
@@ -1865,6 +1928,7 @@ def install_profile(profile_path, install_root):
     ]
     config["current_account_id"] = "phoenix675"
     config["account_rotation_enabled"] = False
+    config.update(preserved_runtime)
     config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
 
 

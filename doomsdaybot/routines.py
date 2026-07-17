@@ -6,6 +6,13 @@ import uuid
 
 
 PROFILE_NAMESPACE = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
+PRIZE_HUNT_SAFE_EXIT_UID = str(
+    uuid.uuid5(PROFILE_NAMESPACE, "prize_hunt:safe_exit")
+)
+PRIZE_HUNT_REPEAT_UIDS = {
+    str(uuid.uuid5(PROFILE_NAMESPACE, f"prize_hunt:{step_id}"))
+    for step_id in ("again", "match", "confirm")
+}
 RESOURCE_TASK_IDS = ("food", "wood", "metal", "oil")
 RESOURCE_STEP_IDS = (
     "region",
@@ -418,7 +425,7 @@ DEFAULT_ROUTINE_TASKS = (
         "name": "Еда",
         "group": "Еда",
         "category": "resources",
-        "enabled": True,
+        "enabled": False,
         "uses_march": True,
         "priority": 100,
         "interval_minutes": 0.1,
@@ -432,7 +439,7 @@ DEFAULT_ROUTINE_TASKS = (
         "name": "Дерево",
         "group": "Дерево",
         "category": "resources",
-        "enabled": True,
+        "enabled": False,
         "uses_march": True,
         "priority": 100,
         "interval_minutes": 0.1,
@@ -446,7 +453,7 @@ DEFAULT_ROUTINE_TASKS = (
         "name": "Металл",
         "group": "Металл",
         "category": "resources",
-        "enabled": True,
+        "enabled": False,
         "uses_march": True,
         "priority": 100,
         "interval_minutes": 0.1,
@@ -460,7 +467,7 @@ DEFAULT_ROUTINE_TASKS = (
         "name": "Нефть",
         "group": "Нефть",
         "category": "resources",
-        "enabled": True,
+        "enabled": False,
         "uses_march": True,
         "priority": 100,
         "interval_minutes": 0.1,
@@ -573,6 +580,16 @@ def image_is_allowed_for_routine(image, task_id, routine_started=False):
     return str(task_id or "") not in disabled_ids
 
 
+def prize_hunt_branch_allows_image(image, repeat_until_stopped):
+    """Keep the mutually exclusive Exit and Again result branches separate."""
+    uid = str(image.get("uid") or "")
+    if uid == PRIZE_HUNT_SAFE_EXIT_UID:
+        return not bool(repeat_until_stopped)
+    if uid in PRIZE_HUNT_REPEAT_UIDS:
+        return bool(repeat_until_stopped)
+    return True
+
+
 def no_action_retry_delay(task):
     """Use a bounded retry delay when a task timed out without any action."""
     interval_seconds = float(task.get("interval_minutes", 1.0)) * 60.0
@@ -580,15 +597,33 @@ def no_action_retry_delay(task):
 
 
 def routine_home_recovery_due(task, had_action, attempted, idle_seconds):
-    """Recover a newly started march task from an unrelated leftover screen."""
+    """Recover a newly started task from an unrelated leftover screen."""
     timeout = max(1.0, float(task.get("timeout_seconds", 8.0) or 8.0))
     recovery_delay = min(12.0, timeout)
+    can_recover = bool(task.get("uses_march", False)) or task.get("id") in {
+        "heal",
+        "research",
+        "train_infantry",
+        "train_riders",
+        "train_shooters",
+        "train_vehicles",
+    }
     return bool(
-        task.get("uses_march", False)
+        can_recover
         and not had_action
         and not attempted
         and float(idle_seconds) >= recovery_delay
     )
+
+
+def routine_requires_settlement(task):
+    """Return whether a task must run inside the player's settlement."""
+    return str(task.get("category") or "") in {
+        "daily",
+        "development",
+        "army",
+        "training",
+    }
 
 
 def routine_march_context_key(input_backend, adb_serial, account_id):
@@ -639,6 +674,7 @@ def upgrade_resource_runtime_metadata(images, tasks):
                 image["action"] = "open_world_search"
                 image["next_template_uid"] = world_search_uid
                 image["delay"] = 0.8
+                image["settlement_screen_marker"] = True
             if step_id == "march":
                 image["confirm_disappears"] = True
             previous_step = runtime_step
@@ -702,6 +738,17 @@ def upgrade_strict_runtime_metadata(images, tasks):
                 20.0,
                 float(task.get("timeout_seconds", 0.0) or 0.0),
             )
+
+    # Claiming a main mission can move the game directly to the daily tab.
+    # Allow the first guarded swipe to resume from that screen even when the
+    # explicit select_daily click was therefore never observed.
+    first_daily_scroll = images_by_uid.get(
+        str(uuid.uuid5(PROFILE_NAMESPACE, "completed_tasks:scroll_daily_1"))
+    )
+    if first_daily_scroll is not None:
+        first_daily_scroll["requires_runtime_steps"] = ["open_tasks"]
+        first_daily_scroll["implied_runtime_steps"] = ["select_daily"]
+        upgraded += 1
     return upgraded
 
 
@@ -749,6 +796,59 @@ def upgrade_prize_hunt_metadata(images, tasks):
         )
         upgraded += 1
 
+    step_requirements = {
+        "campaign": (),
+        "event": ("campaign",),
+        "enter": ("event",),
+        "prepare": ("enter",),
+        "deploy": ("prepare",),
+        "safe_exit_current": ("deploy",),
+        "safe_exit": ("safe_exit_current",),
+        "again": ("safe_exit_current",),
+        "match": ("again",),
+        "confirm": ("match",),
+    }
+    repeatable_steps = {"safe_exit_current", "safe_exit", "again", "match", "confirm"}
+    for priority, (step_id, required_steps) in enumerate(step_requirements.items(), start=10):
+        image = images_by_uid.get(
+            str(uuid.uuid5(PROFILE_NAMESPACE, f"prize_hunt:{step_id}"))
+        )
+        if image is None:
+            continue
+        image["runtime_step"] = step_id
+        image["routine_priority"] = priority
+        image["repeat_runtime_step"] = step_id in repeatable_steps
+        image.pop("allow_runtime_resume", None)
+        image.pop("requires_runtime_steps", None)
+        if required_steps:
+            image["requires_runtime_steps"] = list(required_steps)
+
+    outcome_steps = ("safe_exit_current", "safe_exit", "again")
+    for step_id in outcome_steps:
+        image = images_by_uid.get(
+            str(uuid.uuid5(PROFILE_NAMESPACE, f"prize_hunt:{step_id}"))
+        )
+        if image is None:
+            continue
+        image["allow_runtime_resume"] = True
+        image["runtime_step_mode"] = "any"
+        if step_id == "safe_exit_current":
+            image["requires_runtime_steps"] = ["deploy", "enter"]
+        else:
+            image["requires_runtime_steps"] = ["safe_exit_current", "deploy", "enter"]
+
+    enter_image = images_by_uid.get(
+        str(uuid.uuid5(PROFILE_NAMESPACE, "prize_hunt:enter"))
+    )
+    if enter_image is not None:
+        # The event periodically changes the button caption while retaining
+        # the same card and placement. The strict event prerequisite prevents
+        # this relaxed threshold from matching outside the hunt screen.
+        enter_image["confidence"] = min(
+            0.74,
+            float(enter_image.get("confidence", 0.8) or 0.8),
+        )
+
     for task in tasks:
         if task.get("id") == "prize_hunt":
             task["timeout_seconds"] = max(
@@ -777,6 +877,20 @@ def upgrade_radar_runtime_metadata(images, tasks):
             image.pop("limit_key", None)
         if step_id.startswith("task_"):
             image["prevents_idle_completion"] = True
+            # Marker colors vary slightly between accounts. The red notification
+            # dot plus the existing color/ORB checks still guards the click.
+            image["confidence"] = min(0.68, float(image.get("confidence", 0.82)))
+            image["orb_match_threshold"] = min(
+                3,
+                int(image.get("orb_match_threshold", 3) or 3),
+            )
+            # A dispatched radar marker can stay visible until its timer ends.
+            # Do not send another squad to that same map position meanwhile.
+            image["allow_repeat"] = True
+            image["block_seconds"] = max(
+                900.0,
+                float(image.get("block_seconds", 0.0) or 0.0),
+            )
         upgraded += 1
 
     for task in tasks:

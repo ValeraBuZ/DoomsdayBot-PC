@@ -14,7 +14,9 @@ from doomsdaybot.routines import (
     no_available_squad_wait_exceeded,
     normalize_routine_tasks,
     pick_due_task_index,
+    prize_hunt_branch_allows_image,
     routine_home_recovery_due,
+    routine_requires_settlement,
     routine_march_context_key,
     runtime_step_is_ready,
     task_setting_specs,
@@ -71,7 +73,7 @@ class RoutineTaskTests(unittest.TestCase):
         tasks = default_routine_tasks()
         resources = [task for task in tasks if task.get("category") == "resources"]
         self.assertEqual([task["id"] for task in resources], ["food", "wood", "metal", "oil"])
-        self.assertTrue(all(task["enabled"] and task["uses_march"] for task in resources))
+        self.assertTrue(all(not task["enabled"] and task["uses_march"] for task in resources))
 
     def test_normalization_repairs_values_and_merges_settings(self):
         tasks = normalize_routine_tasks([
@@ -173,8 +175,7 @@ class RoutineTaskTests(unittest.TestCase):
     def test_sixth_march_is_never_scheduled(self):
         tasks = default_routine_tasks()
         for task in tasks:
-            if not task.get("uses_march"):
-                task["enabled"] = False
+            task["enabled"] = bool(task.get("uses_march"))
         index = pick_due_task_index(tasks, {}, 0, 100.0, active_marches=5, max_marches=5)
         self.assertIsNone(index)
         task, wait = next_due_task(tasks, {}, 100.0, active_marches=5, max_marches=5)
@@ -184,8 +185,7 @@ class RoutineTaskTests(unittest.TestCase):
     def test_configured_four_march_limit_is_respected(self):
         tasks = default_routine_tasks()
         for task in tasks:
-            if not task.get("uses_march"):
-                task["enabled"] = False
+            task["enabled"] = bool(task.get("uses_march"))
         blocked = pick_due_task_index(tasks, {}, 0, 100.0, active_marches=4, max_marches=4)
         allowed = pick_due_task_index(tasks, {}, 0, 100.0, active_marches=4, max_marches=5)
         self.assertIsNone(blocked)
@@ -243,6 +243,12 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertFalse(
             routine_home_recovery_due({"uses_march": False}, False, False, 20.0)
         )
+
+    def test_settlement_context_is_required_only_for_base_tasks(self):
+        self.assertTrue(routine_requires_settlement({"category": "army"}))
+        self.assertTrue(routine_requires_settlement({"category": "daily"}))
+        self.assertFalse(routine_requires_settlement({"category": "resources"}))
+        self.assertFalse(routine_requires_settlement({"category": "marches"}))
 
     def test_march_deadline_context_is_scoped_to_player_and_account(self):
         phoenix = routine_march_context_key("adb", "emulator-5564", "phoenix")
@@ -355,15 +361,30 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertEqual(tasks[1]["timeout_seconds"], 20.0)
         self.assertTrue(by_uid[hunt_uids["march"]]["confirm_disappears"])
 
+    def test_completed_tasks_can_resume_when_claim_switches_to_daily_tab(self):
+        import uuid
+
+        namespace = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
+        scroll_uid = str(
+            uuid.uuid5(namespace, "completed_tasks:scroll_daily_1")
+        )
+        images = [{"uid": scroll_uid, "requires_runtime_steps": ["select_daily"]}]
+
+        self.assertEqual(upgrade_strict_runtime_metadata(images, []), 1)
+        self.assertEqual(images[0]["requires_runtime_steps"], ["open_tasks"])
+        self.assertEqual(images[0]["implied_runtime_steps"], ["select_daily"])
+        self.assertTrue(runtime_step_is_ready(images[0], {"open_tasks"}))
+
     def test_prize_hunt_repeat_never_clicks_the_result_exit_button(self):
         import uuid
 
         namespace = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
         uids = {
             step: str(uuid.uuid5(namespace, f"prize_hunt:{step}"))
-            for step in ("safe_exit", "safe_exit_current", "again", "match", "confirm")
+            for step in ("enter", "safe_exit", "safe_exit_current", "again", "match", "confirm")
         }
         images = [
+            {"uid": uids["enter"], "confidence": 0.8},
             {"uid": uids["safe_exit"]},
             {
                 "uid": uids["safe_exit_current"],
@@ -381,7 +402,33 @@ class RoutineTaskTests(unittest.TestCase):
             by_uid[uids["safe_exit_current"]],
         )
         self.assertTrue(by_uid[uids["again"]]["required_setting_value"])
+        self.assertEqual(by_uid[uids["enter"]]["confidence"], 0.74)
+        self.assertEqual(
+            by_uid[uids["again"]]["requires_runtime_steps"],
+            ["safe_exit_current", "deploy", "enter"],
+        )
+        self.assertEqual(by_uid[uids["again"]]["runtime_step_mode"], "any")
+        self.assertTrue(by_uid[uids["again"]]["allow_runtime_resume"])
+        self.assertEqual(
+            by_uid[uids["confirm"]]["requires_runtime_steps"],
+            ["match"],
+        )
         self.assertEqual(tasks[0]["timeout_seconds"], 1800.0)
+
+    def test_prize_hunt_branch_hard_guard(self):
+        import uuid
+
+        namespace = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
+        exit_image = {
+            "uid": str(uuid.uuid5(namespace, "prize_hunt:safe_exit")),
+        }
+        again_image = {
+            "uid": str(uuid.uuid5(namespace, "prize_hunt:again")),
+        }
+        self.assertFalse(prize_hunt_branch_allows_image(exit_image, True))
+        self.assertTrue(prize_hunt_branch_allows_image(again_image, True))
+        self.assertTrue(prize_hunt_branch_allows_image(exit_image, False))
+        self.assertFalse(prize_hunt_branch_allows_image(again_image, False))
 
     def test_hunt_levels_are_left_to_the_game_selection(self):
         zombie_keys = {spec["key"] for spec in task_setting_specs("zombie_hunt")}
@@ -434,6 +481,10 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertEqual(tasks[0]["timeout_seconds"], 20.0)
         self.assertTrue(tasks[0]["complete_when_idle"])
         self.assertEqual(tasks[0]["idle_confirmations"], 3)
+        marker = next(image for image in images if image["uid"] == marker_uid)
+        self.assertEqual(marker["confidence"], 0.68)
+        self.assertEqual(marker["orb_match_threshold"], 3)
+        self.assertEqual(marker["block_seconds"], 900.0)
 
 
 if __name__ == "__main__":

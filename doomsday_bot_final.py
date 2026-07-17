@@ -53,7 +53,9 @@ from doomsdaybot.routines import (
     no_available_squad_wait_exceeded,
     normalize_routine_tasks,
     pick_due_task_index,
+    prize_hunt_branch_allows_image,
     routine_home_recovery_due,
+    routine_requires_settlement,
     routine_march_context_key,
     runtime_step_is_ready,
     upgrade_radar_runtime_metadata,
@@ -65,7 +67,7 @@ from doomsdaybot.state import BotState, compute_runtime_seconds
 from doomsdaybot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.1.7"
+APP_VERSION = "3.1.8"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -73,8 +75,10 @@ TRASH_DIR = IMG_DIR / "_trash"
 SYSTEM_TEMPLATE_GROUP = "Системные окна"
 ACCOUNT_SWITCH_TEMPLATE_GROUP = "Переключение аккаунта"
 GAME_PACKAGE = "com.igg.android.doomsdaylastsurvivors"
-GAME_LOGIN_MINIMUM_SECONDS = 35.0
-GAME_LOGIN_STABLE_SECONDS = 8.0
+# Some accounts show the inactivity-reward popup several seconds after the base
+# is already visible. Keep the login task alive long enough to close it.
+GAME_LOGIN_MINIMUM_SECONDS = 50.0
+GAME_LOGIN_STABLE_SECONDS = 12.0
 
 logger = configure_logging(APP_DIR / "bot.log")
 
@@ -1042,9 +1046,54 @@ class AutoClicker:
                 return True
         return False
 
-    def _return_to_main_screen(self, max_back_steps=5):
+    def _is_settlement_screen_visible(self):
+        markers = [
+            image for image in self.search_images
+            if image.get("settlement_screen_marker") and image.get("enabled", True)
+        ]
+        for marker in markers:
+            try:
+                location, bbox, _score = self._locate_image(marker)
+            except Exception:
+                logger.exception("Ошибка проверки экрана убежища")
+                continue
+            if location and bbox:
+                return True
+        return False
+
+    def _switch_to_settlement_screen(self):
+        if self._is_settlement_screen_visible():
+            return True
+        if not self._is_main_screen_visible():
+            return False
+
+        frame, _origin = self._capture_screen_bgr(force=True)
+        target_x = int(round(frame.shape[1] * 65 / 1280))
+        target_y = int(round(frame.shape[0] * 655 / 720))
+        self.set_status_message("Переход с карты мира в убежище", force=True)
+        try:
+            if self.uses_adb:
+                self.adb_client.tap(target_x, target_y)
+            else:
+                pyautogui.click(target_x, target_y)
+        except Exception:
+            logger.exception("Не удалось перейти с карты мира в убежище")
+            return False
+        self._invalidate_capture()
+
+        for _attempt in range(4):
+            self._interruptible_sleep(0.8)
+            if self._is_settlement_screen_visible():
+                logger.info("Переход с карты мира в убежище подтверждён")
+                return True
+        logger.warning("Переход с карты мира в убежище не подтверждён")
+        return False
+
+    def _return_to_main_screen(self, max_back_steps=5, require_settlement=False):
         for step in range(max(1, int(max_back_steps)) + 1):
             if self._is_main_screen_visible():
+                if require_settlement and not self._is_settlement_screen_visible():
+                    return self._switch_to_settlement_screen()
                 logger.info("Возврат на главный экран подтверждён после %s шагов", step)
                 self.set_status_message("Главный экран найден, переход к следующей задаче", force=True)
                 return True
@@ -2227,6 +2276,13 @@ class AutoClicker:
             ),
             force=True,
         )
+        if (
+            routine_requires_settlement(task)
+            and self._is_main_screen_visible()
+            and not self._is_settlement_screen_visible()
+        ):
+            if self._switch_to_settlement_screen():
+                self.routine_last_action_time = time.time()
         if task.get("id") == "game_login" and not self._launch_game_for_login():
             self._defer_current_routine_no_action(now)
             return None
@@ -2336,10 +2392,20 @@ class AutoClicker:
             "gathering_boost",
             "mail_rewards",
             "completed_tasks",
+            "vip_rewards",
+            "radar",
+            "research",
+            "heal",
+            "train_infantry",
+            "train_riders",
+            "train_shooters",
+            "train_vehicles",
             "processing_factory",
             "processing_contest",
         }:
-            self._return_to_main_screen()
+            self._return_to_main_screen(
+                require_settlement=routine_requires_settlement(task)
+            )
 
         if task.get("id") == "prize_hunt" and task.get("settings", {}).get("repeat_until_stopped", True):
             self.routine_next_run[task["id"]] = now
@@ -2369,7 +2435,10 @@ class AutoClicker:
             task.get("id"),
         )
         self.set_status_message(self.tr('routine_recovering_home'), force=True)
-        if not self._return_to_main_screen(max_back_steps=4):
+        if not self._return_to_main_screen(
+            max_back_steps=4,
+            require_settlement=routine_requires_settlement(task),
+        ):
             return False
         self.blocked_coords.clear()
         self.routine_last_action_time = time.time()
@@ -2388,6 +2457,12 @@ class AutoClicker:
             "Routine %s timed out without actions; retrying in %.0f seconds",
             task.get("id"),
             retry_delay,
+        )
+        # Keep standalone checkboxes independent: a partial or unavailable task
+        # must not leave the next task trapped on its sub-screen.
+        self._return_to_main_screen(
+            max_back_steps=5,
+            require_settlement=routine_requires_settlement(task),
         )
         self.set_status_message(
             self.tr(
@@ -2840,24 +2915,46 @@ class AutoClicker:
                             current_value = current_routine_task.get("settings", {}).get(required_setting_key)
                             if str(current_value) != str(required_value):
                                 continue
+                        if (
+                            current_routine_task.get("id") == "prize_hunt"
+                            and not prize_hunt_branch_allows_image(
+                                img_config,
+                                current_routine_task.get("settings", {}).get(
+                                    "repeat_until_stopped",
+                                    True,
+                                ),
+                            )
+                        ):
+                            continue
 
                         self.set_status_message(f"Проверка: {img_config['description']}")
 
-                        guard_uid = str(img_config.get("skip_if_uid_visible") or "")
-                        if guard_uid:
+                        guard_uids = img_config.get("skip_if_visible_uids") or ()
+                        if isinstance(guard_uids, str):
+                            guard_uids = (guard_uids,)
+                        guard_uids = [str(uid) for uid in guard_uids if str(uid)]
+                        legacy_guard_uid = str(img_config.get("skip_if_uid_visible") or "")
+                        if legacy_guard_uid and legacy_guard_uid not in guard_uids:
+                            guard_uids.append(legacy_guard_uid)
+                        skip_guarded_action = False
+                        for guard_uid in guard_uids:
                             guard_image = next(
                                 (image for image in group_images if image.get("uid") == guard_uid),
                                 None,
                             )
-                            if guard_image:
-                                guard_location, _guard_bbox, _guard_confidence = self._locate_image(guard_image)
-                                if guard_location:
-                                    logger.debug(
-                                        "Пропуск %s: защитный шаблон %s уже виден",
-                                        img_config.get("description"),
-                                        guard_image.get("description"),
-                                    )
-                                    continue
+                            if not guard_image:
+                                continue
+                            guard_location, _guard_bbox, _guard_confidence = self._locate_image(guard_image)
+                            if guard_location:
+                                logger.debug(
+                                    "Пропуск %s: защитный шаблон %s уже виден",
+                                    img_config.get("description"),
+                                    guard_image.get("description"),
+                                )
+                                skip_guarded_action = True
+                                break
+                        if skip_guarded_action:
+                            continue
 
                         required_visible_uid = str(img_config.get("requires_visible_uid") or "")
                         if required_visible_uid:
@@ -3418,21 +3515,30 @@ class AutoClicker:
             branch_x, branch_y = (70, 300) if branch == "war" else (70, 165)
             branch_x = int(round(branch_x * display.scale_x))
             branch_y = int(round(branch_y * display.scale_y))
-            swipe_from = (int(1000 * display.scale_x), int(500 * display.scale_y))
-            swipe_to = (int(300 * display.scale_x), int(500 * display.scale_y))
+            swipe_left_from = (int(1000 * display.scale_x), int(500 * display.scale_y))
+            swipe_left_to = (int(300 * display.scale_x), int(500 * display.scale_y))
+            swipe_right_from = swipe_left_to
+            swipe_right_to = swipe_left_from
             if self.uses_adb:
                 self.adb_client.tap(branch_x, branch_y)
                 time.sleep(0.5)
-                for _ in range(4):
-                    self.adb_client.swipe(*swipe_from, *swipe_to, 650)
-                    time.sleep(0.25)
+                for _ in range(6):
+                    self.adb_client.swipe(*swipe_right_from, *swipe_right_to, 450)
+                    time.sleep(0.15)
+                for _ in range(2):
+                    self.adb_client.swipe(*swipe_left_from, *swipe_left_to, 450)
+                    time.sleep(0.3)
             else:
                 pyautogui.click(branch_x, branch_y)
                 time.sleep(0.5)
-                for _ in range(4):
-                    pyautogui.moveTo(*swipe_from)
-                    pyautogui.dragTo(*swipe_to, duration=0.65, button="left")
-                    time.sleep(0.25)
+                for _ in range(6):
+                    pyautogui.moveTo(*swipe_right_from)
+                    pyautogui.dragTo(*swipe_right_to, duration=0.45, button="left")
+                    time.sleep(0.15)
+                for _ in range(2):
+                    pyautogui.moveTo(*swipe_left_from)
+                    pyautogui.dragTo(*swipe_left_to, duration=0.45, button="left")
+                    time.sleep(0.3)
 
             frame, _origin = self._capture_screen_bgr(force=True)
             if frame.shape[1] != 1280 or frame.shape[0] != 720:
@@ -3460,7 +3566,14 @@ class AutoClicker:
                     if saturation >= 25.0:
                         candidates.append((x_value, y_value))
             if candidates:
-                research_x, research_y = min(candidates, key=lambda point: (point[0], point[1]))
+                # The rightmost colored nodes are the current unlocked frontier.
+                centered_candidates = [
+                    point for point in candidates
+                    if 350 <= point[0] <= 1000
+                ] or candidates
+                frontier_x = max(point[0] for point in centered_candidates)
+                frontier = [point for point in centered_candidates if point[0] >= frontier_x - 35]
+                research_x, research_y = min(frontier, key=lambda point: abs(point[1] - 360))
                 research_x = int(round(research_x * display.scale_x))
                 research_y = int(round(research_y * display.scale_y))
                 if self.uses_adb:
