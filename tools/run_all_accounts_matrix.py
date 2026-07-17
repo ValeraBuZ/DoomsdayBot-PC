@@ -1,0 +1,341 @@
+from __future__ import annotations
+
+import argparse
+from contextlib import contextmanager
+from datetime import datetime
+import json
+import logging
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+
+import cv2
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from doomsday_bot_final import AutoClicker, CONFIG_FILE, GAME_PACKAGE, logger
+from doomsdaybot.adb import AdbClient
+from doomsdaybot.ldplayer import find_ldconsole, list_instances
+from doomsdaybot.routines import effective_task_group
+
+
+DEFAULT_INDEXES = (1, 2, 3, 4, 5, 7)
+DEFAULT_TASKS = (
+    "vip_rewards",
+    "radar",
+    "mail_rewards",
+    "research",
+    "train_infantry",
+    "train_riders",
+    "train_shooters",
+    "train_vehicles",
+    "processing_factory",
+    "completed_tasks",
+    "gathering_boost",
+    "food",
+    "wood",
+    "metal",
+    "oil",
+)
+TASK_TIMEOUTS = {
+    "game_login": 240.0,
+    "vip_rewards": 60.0,
+    "radar": 420.0,
+    "mail_rewards": 75.0,
+    "research": 90.0,
+    "train_infantry": 65.0,
+    "train_riders": 65.0,
+    "train_shooters": 65.0,
+    "train_vehicles": 65.0,
+    "processing_factory": 100.0,
+    "completed_tasks": 100.0,
+    "gathering_boost": 60.0,
+    "food": 75.0,
+    "wood": 75.0,
+    "metal": 75.0,
+    "oil": 75.0,
+}
+
+
+def _run_hidden(command, timeout=30):
+    kwargs = {
+        "cwd": PROJECT_ROOT,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "timeout": timeout,
+        "check": False,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return subprocess.run([str(part) for part in command], **kwargs)
+
+
+def _safe_name(value):
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", str(value or "")).strip("_")
+    return cleaned or "account"
+
+
+def _write_json(path, payload):
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+@contextmanager
+def _task_log(path):
+    handler = logging.FileHandler(path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+    logger.addHandler(handler)
+    try:
+        yield
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+
+def _wait_for_adb(client, timeout_seconds=150.0):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if client.is_available():
+            try:
+                boot_completed = client._run(
+                    ["shell", "getprop", "sys.boot_completed"],
+                    timeout=5,
+                )
+                if str(boot_completed).strip() == "1":
+                    return True
+            except Exception:
+                pass
+        time.sleep(2.0)
+    return False
+
+
+def _capture(client, path):
+    try:
+        frame = client.screenshot_bgr()
+        return bool(cv2.imwrite(str(path), frame))
+    except Exception:
+        logger.exception("Live matrix screenshot failed: %s", path)
+        return False
+
+
+def _task_settings(task_id, research_branch, resource_level):
+    if task_id == "research":
+        return {"branch": research_branch, "use_speedups": False}
+    if task_id == "gathering_boost":
+        return {"boost_hours": 8}
+    if task_id in {"food", "wood", "metal", "oil"}:
+        return {"resource_level": resource_level}
+    if task_id.startswith("train_"):
+        return {"highest_tier": True, "collect_finished": True}
+    return {}
+
+
+def run_task(serial, account_key, task_id, output_dir, research_branch, resource_level):
+    started_at = time.time()
+    log_path = output_dir / f"{task_id}.log"
+    screenshot_path = output_dir / f"{task_id}.png"
+    result = {
+        "task": task_id,
+        "started": False,
+        "settled": False,
+        "actions": 0,
+        "completed_steps": [],
+        "status": "",
+        "duration_seconds": 0.0,
+        "screenshot": screenshot_path.name,
+        "error": "",
+    }
+    observed_steps = set()
+
+    with _task_log(log_path):
+        bot = AutoClicker(root=None)
+        bot.stop_schedule_thread()
+        # Live tests must never alter task checkboxes or account settings.
+        bot.save_config = lambda: None
+        try:
+            bot.minimize_on_start = False
+            bot.input_backend = "adb"
+            bot.adb_serial = serial
+            bot.current_account_id = account_key
+            bot.routine_march_context = f"adb:{serial}:{account_key}"
+            bot.routine_march_deadlines = []
+            bot._refresh_adb_client()
+            for task in bot.routine_tasks:
+                enabled = task.get("id") == task_id
+                task["enabled"] = enabled
+                bot.groups[effective_task_group(task)] = enabled
+
+            selected = bot.get_routine_task(task_id)
+            if selected is None:
+                result["error"] = "unknown task"
+                return result
+            selected.setdefault("settings", {}).update(
+                _task_settings(task_id, research_branch, resource_level)
+            )
+            selected["timeout_seconds"] = max(
+                float(selected.get("timeout_seconds", 0.0) or 0.0),
+                210.0 if task_id == "game_login" else 20.0,
+            )
+
+            group = effective_task_group(selected)
+            tracked_paths = {image["path"] for image in bot.search_images}
+            initial_stats = {path: int(bot.stats.get(path, 0)) for path in tracked_paths}
+            bot.routine_next_run[task_id] = 0.0
+            result["started"] = bool(bot.start_task_only(task_id))
+            if not result["started"]:
+                result["status"] = bot.status_message
+                result["error"] = "task did not start"
+                return result
+
+            timeout_seconds = TASK_TIMEOUTS.get(task_id, 75.0)
+            deadline = time.time() + timeout_seconds
+            while time.time() < deadline and bot.is_running:
+                observed_steps.update(bot.routine_completed_steps)
+                next_run = float(bot.routine_next_run.get(task_id, 0.0) or 0.0)
+                if bot.current_routine_task_id is None and next_run > time.time() + 1.0:
+                    if task_id == "game_login":
+                        result["settled"] = bool(bot._is_main_screen_visible())
+                        if not result["settled"]:
+                            result["error"] = "main screen was not detected"
+                    else:
+                        result["settled"] = True
+                    break
+                time.sleep(1.0)
+
+            result["actions"] = sum(
+                max(0, int(bot.stats.get(path, 0)) - initial_stats[path])
+                for path in tracked_paths
+            )
+            observed_steps.update(bot.routine_completed_steps)
+            result["completed_steps"] = sorted(observed_steps)
+            result["status"] = bot.status_message
+            if not result["settled"] and not result["error"]:
+                result["error"] = "timeout"
+        except Exception as exc:
+            logger.exception("Live matrix task failed: account=%s task=%s", account_key, task_id)
+            result["error"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            result["status"] = result["status"] or bot.status_message
+            observed_steps.update(bot.routine_completed_steps)
+            result["completed_steps"] = sorted(observed_steps)
+            if bot.adb_client:
+                _capture(bot.adb_client, screenshot_path)
+            bot.stop()
+            if bot._thread:
+                bot._thread.join(timeout=5.0)
+            bot.stop_schedule_thread()
+            result["duration_seconds"] = round(time.time() - started_at, 2)
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--indexes", default=",".join(map(str, DEFAULT_INDEXES)))
+    parser.add_argument("--tasks", default=",".join(DEFAULT_TASKS))
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--research-branch", choices=("economy", "war"), default="economy")
+    parser.add_argument("--resource-level", type=int, default=7)
+    parser.add_argument("--startup-settle-seconds", type=float, default=15.0)
+    parser.add_argument("--keep-running", action="store_true")
+    args = parser.parse_args()
+
+    indexes = [int(value.strip()) for value in args.indexes.split(",") if value.strip()]
+    tasks = [value.strip() for value in args.tasks.split(",") if value.strip()]
+    output_root = args.output or (
+        PROJECT_ROOT / "test_runs" / f"matrix_{datetime.now():%Y%m%d_%H%M%S}"
+    )
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    ldconsole = find_ldconsole()
+    if ldconsole is None:
+        raise SystemExit("LDPlayer console not found")
+    instances = {instance.index: instance for instance in list_instances(ldconsole)}
+    original_config = CONFIG_FILE.read_bytes()
+    (output_root / "config.before.json").write_bytes(original_config)
+    summary = {
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "game_package": GAME_PACKAGE,
+        "indexes": indexes,
+        "tasks": tasks,
+        "accounts": [],
+    }
+
+    try:
+        for index in indexes:
+            instance = instances.get(index)
+            if instance is None:
+                summary["accounts"].append({"index": index, "error": "LDPlayer instance not found"})
+                continue
+            account_key = f"ld{index}_{_safe_name(instance.name)}"
+            account_dir = output_root / account_key
+            account_dir.mkdir(parents=True, exist_ok=True)
+            account_result = {
+                "index": index,
+                "name": instance.name,
+                "serial": instance.adb_serial,
+                "resolution": f"{instance.width}x{instance.height}",
+                "tasks": [],
+                "error": "",
+            }
+            summary["accounts"].append(account_result)
+            _write_json(output_root / "summary.json", summary)
+
+            try:
+                launch = _run_hidden([ldconsole, "launch", "--index", index], timeout=30)
+                if launch.returncode != 0:
+                    raise RuntimeError(launch.stderr.strip() or "LDPlayer launch failed")
+                client = AdbClient(serial=instance.adb_serial)
+                if not _wait_for_adb(client):
+                    raise RuntimeError(f"ADB did not become ready: {instance.adb_serial}")
+                time.sleep(max(0.0, args.startup_settle_seconds))
+
+                login_result = run_task(
+                    instance.adb_serial,
+                    account_key,
+                    "game_login",
+                    account_dir,
+                    args.research_branch,
+                    min(8, max(1, args.resource_level)),
+                )
+                account_result["tasks"].append(login_result)
+                _write_json(output_root / "summary.json", summary)
+                if not login_result["settled"]:
+                    account_result["error"] = "game login did not reach a stable main screen"
+                    continue
+
+                for task_id in tasks:
+                    task_result = run_task(
+                        instance.adb_serial,
+                        account_key,
+                        task_id,
+                        account_dir,
+                        args.research_branch,
+                        min(8, max(1, args.resource_level)),
+                    )
+                    account_result["tasks"].append(task_result)
+                    _write_json(output_root / "summary.json", summary)
+            except Exception as exc:
+                account_result["error"] = f"{type(exc).__name__}: {exc}"
+                _write_json(output_root / "summary.json", summary)
+            finally:
+                if not args.keep_running:
+                    _run_hidden([ldconsole, "quit", "--index", index], timeout=30)
+                    time.sleep(3.0)
+    finally:
+        CONFIG_FILE.write_bytes(original_config)
+        summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
+        _write_json(output_root / "summary.json", summary)
+
+    print(output_root)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

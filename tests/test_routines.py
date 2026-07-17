@@ -169,8 +169,13 @@ class RoutineTaskTests(unittest.TestCase):
         tasks = default_routine_tasks()
         prize = next(task for task in tasks if task["id"] == "prize_hunt")
         prize["enabled"] = True
-        index = pick_due_task_index(tasks, {}, start_index=0, now=100.0, active_marches=0, max_marches=5)
+        index = pick_due_task_index(tasks, {}, start_index=0, now=100.0, active_marches=5, max_marches=5)
         self.assertEqual(tasks[index]["id"], "prize_hunt")
+
+    def test_old_prize_hunt_config_is_migrated_away_from_world_marches(self):
+        tasks = normalize_routine_tasks([{"id": "prize_hunt", "uses_march": True}])
+        prize = next(task for task in tasks if task["id"] == "prize_hunt")
+        self.assertFalse(prize["uses_march"])
 
     def test_sixth_march_is_never_scheduled(self):
         tasks = default_routine_tasks()
@@ -274,14 +279,19 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertTrue(image_is_allowed_for_routine(image, "oil"))
 
         startup_image = {"startup_only": True}
-        self.assertTrue(image_is_allowed_for_routine(startup_image, "vip_rewards"))
+        self.assertTrue(image_is_allowed_for_routine(startup_image, "game_login"))
+        self.assertFalse(image_is_allowed_for_routine(startup_image, "vip_rewards"))
         self.assertFalse(
             image_is_allowed_for_routine(
                 startup_image,
-                "vip_rewards",
+                "game_login",
                 routine_started=True,
             )
         )
+
+        login_only = {"only_routine_ids": ["game_login"]}
+        self.assertTrue(image_is_allowed_for_routine(login_only, "game_login"))
+        self.assertFalse(image_is_allowed_for_routine(login_only, "heal"))
 
     def test_runtime_steps_block_unsafe_action_until_prerequisite(self):
         image = {"requires_runtime_steps": ["boost_category"]}
@@ -381,10 +391,23 @@ class RoutineTaskTests(unittest.TestCase):
         namespace = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
         uids = {
             step: str(uuid.uuid5(namespace, f"prize_hunt:{step}"))
-            for step in ("enter", "safe_exit", "safe_exit_current", "again", "match", "confirm")
+            for step in (
+                "enter",
+                "open_squad",
+                "prepare",
+                "deploy",
+                "safe_exit",
+                "safe_exit_current",
+                "again",
+                "match",
+                "confirm",
+            )
         }
         images = [
             {"uid": uids["enter"], "confidence": 0.8},
+            {"uid": uids["open_squad"], "action": "click", "confidence": 0.88},
+            {"uid": uids["prepare"], "action": "prize_prepare", "confidence": 0.88},
+            {"uid": uids["deploy"]},
             {"uid": uids["safe_exit"]},
             {
                 "uid": uids["safe_exit_current"],
@@ -394,8 +417,17 @@ class RoutineTaskTests(unittest.TestCase):
         ]
         tasks = [{"id": "prize_hunt", "timeout_seconds": 10.0}]
 
-        self.assertEqual(upgrade_prize_hunt_metadata(images, tasks), 5)
+        self.assertEqual(upgrade_prize_hunt_metadata(images, tasks), 7)
         by_uid = {image["uid"]: image for image in images}
+        self.assertEqual(by_uid[uids["open_squad"]]["action"], "prize_start_or_prepare")
+        self.assertTrue(by_uid[uids["open_squad"]]["grayscale"])
+        self.assertEqual(by_uid[uids["open_squad"]]["confidence"], 0.84)
+        self.assertEqual(by_uid[uids["prepare"]]["action"], "prize_prepare")
+        self.assertEqual(
+            by_uid[uids["deploy"]]["requires_runtime_steps"],
+            ["prepare", "open_squad"],
+        )
+        self.assertEqual(by_uid[uids["deploy"]]["runtime_step_mode"], "any")
         self.assertFalse(by_uid[uids["safe_exit"]]["required_setting_value"])
         self.assertNotIn(
             "complete_if_setting_false",

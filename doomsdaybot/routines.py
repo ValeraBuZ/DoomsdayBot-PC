@@ -376,7 +376,7 @@ DEFAULT_ROUTINE_TASKS = (
         "category": "marches",
         "enabled": False,
         "standalone": True,
-        "uses_march": True,
+        "uses_march": False,
         "priority": 55,
         "interval_minutes": 1.0,
         "timeout_seconds": 1800.0,
@@ -571,13 +571,24 @@ def completed_runtime_steps_for_image(image):
 
 def image_is_allowed_for_routine(image, task_id, routine_started=False):
     """Return whether a shared system template may run in this routine."""
+    task_id = str(task_id or "")
+    only = image.get("only_routine_ids", ())
+    if isinstance(only, str):
+        only = (only,)
+    only_ids = {str(item) for item in only if str(item)}
+    if only_ids and task_id not in only_ids:
+        return False
+    # Startup banners are intentionally handled only by the opt-in login task.
+    # Matching them during healing or training can open the rotating event tile.
+    if image.get("startup_only", False) and task_id != "game_login":
+        return False
     if routine_started and image.get("startup_only", False):
         return False
     disabled = image.get("disabled_routine_ids", ())
     if isinstance(disabled, str):
         disabled = (disabled,)
     disabled_ids = {str(item) for item in disabled if str(item)}
-    return str(task_id or "") not in disabled_ids
+    return task_id not in disabled_ids
 
 
 def prize_hunt_branch_allows_image(image, repeat_until_stopped):
@@ -757,6 +768,35 @@ def upgrade_prize_hunt_metadata(images, tasks):
     images_by_uid = {str(image.get("uid") or ""): image for image in images}
     upgraded = 0
 
+    open_squad = images_by_uid.get(
+        str(uuid.uuid5(PROFILE_NAMESPACE, "prize_hunt:open_squad"))
+    )
+    if open_squad is not None:
+        open_squad.update(
+            {
+                "action": "prize_start_or_prepare",
+                "description": "Запустить охоту или настроить отряд",
+                "grayscale": True,
+                "confidence": min(
+                    0.84,
+                    float(open_squad.get("confidence", 0.88) or 0.88),
+                ),
+            }
+        )
+        upgraded += 1
+
+    prepare = images_by_uid.get(
+        str(uuid.uuid5(PROFILE_NAMESPACE, "prize_hunt:prepare"))
+    )
+    if prepare is not None:
+        prepare.update(
+            {
+                "action": "prize_prepare",
+                "description": "Заполнить отряд для охоты",
+            }
+        )
+        upgraded += 1
+
     safe_exit = images_by_uid.get(
         str(uuid.uuid5(PROFILE_NAMESPACE, "prize_hunt:safe_exit"))
     )
@@ -800,7 +840,8 @@ def upgrade_prize_hunt_metadata(images, tasks):
         "campaign": (),
         "event": ("campaign",),
         "enter": ("event",),
-        "prepare": ("enter",),
+        "open_squad": ("enter",),
+        "prepare": ("open_squad",),
         "deploy": ("prepare",),
         "safe_exit_current": ("deploy",),
         "safe_exit": ("safe_exit_current",),
@@ -822,6 +863,15 @@ def upgrade_prize_hunt_metadata(images, tasks):
         image.pop("requires_runtime_steps", None)
         if required_steps:
             image["requires_runtime_steps"] = list(required_steps)
+
+    deploy_image = images_by_uid.get(
+        str(uuid.uuid5(PROFILE_NAMESPACE, "prize_hunt:deploy"))
+    )
+    if deploy_image is not None:
+        # A previously saved squad can enter immediately; an empty squad must
+        # first pass through prize_prepare. Both states are valid.
+        deploy_image["requires_runtime_steps"] = ["prepare", "open_squad"]
+        deploy_image["runtime_step_mode"] = "any"
 
     outcome_steps = ("safe_exit_current", "safe_exit", "again")
     for step_id in outcome_steps:
@@ -925,6 +975,11 @@ def _normalize_task(source, default):
     task_id = str(source.get("id", default["id"])).strip() or default["id"]
     name = str(source.get("name", default.get("name", task_id))).strip() or task_id
     group = str(source.get("group", default["group"])).strip() or default["group"]
+    uses_march = bool(source.get("uses_march", default.get("uses_march", False)))
+    if task_id == "prize_hunt":
+        # Prize Hunt uses its own event squad and is available even when all
+        # regular world marches are occupied. This also migrates old configs.
+        uses_march = False
     return {
         "id": task_id,
         "name": name,
@@ -932,7 +987,7 @@ def _normalize_task(source, default):
         "category": str(source.get("category", default.get("category", "custom"))),
         "enabled": bool(source.get("enabled", default.get("enabled", True))),
         "standalone": bool(source.get("standalone", default.get("standalone", False))),
-        "uses_march": bool(source.get("uses_march", default.get("uses_march", False))),
+        "uses_march": uses_march,
         "priority": int(_positive_float(source.get("priority"), default.get("priority", 100), 1)),
         "interval_minutes": _positive_float(
             source.get("interval_minutes"),

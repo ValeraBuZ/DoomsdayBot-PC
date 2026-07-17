@@ -1024,6 +1024,7 @@ PRIZE_HUNT_STEPS = (
     ("campaign", "Открыть кампанию", "hivemind_rally_started.png", (742, 601, 824, 708), (0, 0), False),
     ("event", "Открыть охоту за призом", "campaign_menu.png", (905, 516, 1175, 579), (0, 0), False),
     ("enter", "Войти в охоту за призом", "prize_hunt_menu.png", (465, 500, 811, 584), (0, 0), False),
+    ("open_squad", "Запустить охоту или настроить отряд", "prize_hunt_pairing.png", (535, 515, 746, 567), (0, 0), True),
     ("prepare", "Заполнить отряд для охоты", "prize_hunt_ready.png", (861, 619, 1063, 667), (0, 0), False),
     ("deploy", "Отправить отряд на охоту", "prize_hunt_manual_fill.png", (862, 619, 1063, 667), (0, 0), False),
     ("safe_exit", "Выйти после поражения без возрождения", "prize_hunt_result_after_exit.png", (615, 581, 871, 652), (0, 0), False),
@@ -1781,6 +1782,8 @@ def build_profile(destination):
         configured_image["orb_match_threshold"] = 3
         configured_image["allow_repeat"] = True
         configured_image["block_seconds"] = 1.5
+        if step_id == "open_squad":
+            configured_image["action"] = "prize_start_or_prepare"
         if step_id == "prepare":
             configured_image["action"] = "prize_prepare"
         if step_id in {"again", "match", "confirm"}:

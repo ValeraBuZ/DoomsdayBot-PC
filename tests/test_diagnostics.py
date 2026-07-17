@@ -33,11 +33,15 @@ class DiagnosticReportTests(unittest.TestCase):
                 "2026 - DoomsdayBot - ERROR - user@example.com failed\n",
                 encoding="utf-8",
             )
+            external_log = root / "runtime.log"
+            external_log.write_text("runtime action trace\n", encoding="utf-8")
             report = create_diagnostic_report(
                 root,
                 app_version="test",
                 config_path=config_path,
                 runtime_state={"adb_serial": "emulator-5560"},
+                log_paths=[external_log],
+                screenshot_png=b"fake-png",
             )
             with zipfile.ZipFile(report) as archive:
                 names = set(archive.namelist())
@@ -45,12 +49,16 @@ class DiagnosticReportTests(unittest.TestCase):
                 self.assertIn("installation_checklist.txt", names)
                 self.assertIn("config_sanitized.json", names)
                 self.assertIn("logs/bot.log.txt", names)
+                self.assertIn("logs/runtime.log.txt", names)
+                self.assertIn("current_screen.png", names)
                 config = archive.read("config_sanitized.json").decode("utf-8")
                 logs = archive.read("logs/bot.log.txt").decode("utf-8")
                 missing = archive.read("missing_templates.txt").decode("utf-8")
+                screenshot = archive.read("current_screen.png")
             self.assertNotIn("must-not-leak", config)
             self.assertNotIn("user@example.com", logs)
             self.assertIn("img/missing.png", missing)
+            self.assertEqual(screenshot, b"fake-png")
 
 
 if __name__ == "__main__":

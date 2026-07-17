@@ -10,6 +10,7 @@ config.json
 img/
 backups/
 reports/
+test_runs/
 build/
 dist/
 android_samsung_mvp/

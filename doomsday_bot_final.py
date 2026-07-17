@@ -67,7 +67,7 @@ from doomsdaybot.state import BotState, compute_runtime_seconds
 from doomsdaybot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.1.8"
+APP_VERSION = "3.1.9"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -79,6 +79,7 @@ GAME_PACKAGE = "com.igg.android.doomsdaylastsurvivors"
 # is already visible. Keep the login task alive long enough to close it.
 GAME_LOGIN_MINIMUM_SECONDS = 50.0
 GAME_LOGIN_STABLE_SECONDS = 12.0
+WORLD_SEARCH_TASK_IDS = {"food", "wood", "metal", "oil", "zombie_hunt", "collective_mind"}
 
 logger = configure_logging(APP_DIR / "bot.log")
 
@@ -973,7 +974,29 @@ class AutoClicker:
             "maximum_marches": self.routine_max_marches,
             "status": self.status_message,
             "account_profiles": len(self.account_profiles),
+            "current_task": self.current_routine_task_id,
+            "standalone_task": self.routine_only_task_id,
+            "completed_steps": sorted(self.routine_completed_steps),
+            "current_action_count": self.routine_current_action_count,
+            "enabled_tasks": [
+                task.get("id") for task in self.routine_tasks
+                if is_task_effectively_enabled(task)
+            ],
         }
+        log_paths = [
+            getattr(handler, "baseFilename", None)
+            for handler in logger.handlers
+            if getattr(handler, "baseFilename", None)
+        ]
+        screenshot_png = None
+        if self.adb_client and self.adb_client.is_available():
+            try:
+                frame = self.adb_client.screenshot_bgr()
+                encoded, payload = cv2.imencode(".png", frame)
+                if encoded:
+                    screenshot_png = payload.tobytes()
+            except Exception:
+                logger.exception("Не удалось добавить снимок экрана в диагностический отчёт")
         report_path = create_diagnostic_report(
             APP_DIR,
             app_version=APP_VERSION,
@@ -981,6 +1004,8 @@ class AutoClicker:
             runtime_state=runtime_state,
             adb_path=self.adb_path or None,
             ldconsole_path=ldconsole,
+            log_paths=log_paths,
+            screenshot_png=screenshot_png,
         )
         logger.info("Диагностический отчёт создан: %s", report_path)
         self.set_status_message(self.tr('report_created', path=report_path), force=True)
@@ -1088,6 +1113,39 @@ class AutoClicker:
                 return True
         logger.warning("Переход с карты мира в убежище не подтверждён")
         return False
+
+    def _prepare_world_search_screen(self):
+        """Open the world-search panel without relying on a base-layout template."""
+        if not self._is_main_screen_visible() and not self._return_to_main_screen(max_back_steps=4):
+            return False
+
+        display = self.get_display_profile() if self.uses_adb else make_display_profile(1280, 720)
+        try:
+            if self._is_settlement_screen_visible():
+                region_x = int(round(65 * display.scale_x))
+                region_y = int(round(655 * display.scale_y))
+                if self.uses_adb:
+                    self.adb_client.tap(region_x, region_y)
+                else:
+                    pyautogui.click(region_x, region_y)
+                self._invalidate_capture()
+                self._interruptible_sleep(1.5)
+
+            search_x = int(round(43 * display.scale_x))
+            search_y = int(round(447 * display.scale_y))
+            if self.uses_adb:
+                self.adb_client.tap(search_x, search_y)
+            else:
+                pyautogui.click(search_x, search_y)
+            self._invalidate_capture()
+            self._interruptible_sleep(1.0)
+        except Exception:
+            logger.exception("Не удалось открыть поиск на карте мира")
+            return False
+
+        self.set_status_message("Карта мира: поиск открыт", force=True)
+        logger.info("World search prepared directly for task %s", self.current_routine_task_id)
+        return True
 
     def _return_to_main_screen(self, max_back_steps=5, require_settlement=False):
         for step in range(max(1, int(max_back_steps)) + 1):
@@ -2286,6 +2344,10 @@ class AutoClicker:
         if task.get("id") == "game_login" and not self._launch_game_for_login():
             self._defer_current_routine_no_action(now)
             return None
+        if task.get("id") in WORLD_SEARCH_TASK_IDS and self._prepare_world_search_screen():
+            self.routine_completed_steps.add("world_search")
+            self.routine_current_had_action = True
+            self.routine_last_action_time = time.time()
         return task
 
     def _routine_idle_completion_ready(self, task):
@@ -2385,6 +2447,16 @@ class AutoClicker:
             "collective_mind",
         }:
             self._interruptible_sleep(1.5)
+            if task.get("id") == "zombie_hunt" and completion_clicked:
+                try:
+                    if self.uses_adb:
+                        self.adb_client.keyevent(4)
+                    else:
+                        pyautogui.press("escape")
+                    self._invalidate_capture()
+                    self._interruptible_sleep(0.8)
+                except Exception:
+                    logger.exception("Не удалось закрыть экран развёртывания после охоты")
             self._return_to_main_screen(max_back_steps=3)
 
         if task.get("id") in {
@@ -3382,6 +3454,33 @@ class AutoClicker:
             img_config["last_used"] = time.time()
             label = "зомби" if action == "zombie_search" else "коллективного разума"
             self.set_status_message(f"Поиск {label}: используется сохранённый в игре уровень", force=True)
+            self._interruptible_sleep(img_config.get("delay", self.sleep_found))
+            return
+
+        if action == "prize_start_or_prepare":
+            if self.uses_adb:
+                self.adb_client.tap(int(round(target_x)), int(round(target_y)))
+            else:
+                pyautogui.click(target_x, target_y)
+            self._invalidate_capture()
+            self._interruptible_sleep(2.0)
+
+            still_waiting, _bbox, _confidence = self._locate_image(img_config)
+            if still_waiting is not None:
+                setup_x = int(round(873 * display.scale_x))
+                setup_y = int(round(340 * display.scale_y))
+                if self.uses_adb:
+                    self.adb_client.tap(setup_x, setup_y)
+                else:
+                    pyautogui.click(setup_x, setup_y)
+                self._invalidate_capture()
+                self.set_status_message(
+                    "Охота: отряд не настроен, открываю его заполнение",
+                    force=True,
+                )
+            else:
+                self.set_status_message("Охота: подбор запущен", force=True)
+            img_config["last_used"] = time.time()
             self._interruptible_sleep(img_config.get("delay", self.sleep_found))
             return
 

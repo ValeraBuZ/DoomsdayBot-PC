@@ -63,6 +63,8 @@ def create_diagnostic_report(
     adb_path=None,
     ldconsole_path=None,
     output_dir=None,
+    log_paths=None,
+    screenshot_png=None,
 ):
     app_dir = Path(app_dir).resolve()
     config_path = Path(config_path)
@@ -121,8 +123,18 @@ def create_diagnostic_report(
         "6. Для переноса обучения используйте ZIP-профиль с шаблонами.\n"
     )
 
+    log_candidates = list(app_dir.glob("bot.log*"))
+    log_candidates.extend(Path(path) for path in (log_paths or ()) if path)
     log_chunks = []
-    for log_path in sorted(app_dir.glob("bot.log*")):
+    seen_logs = set()
+    for log_path in sorted(log_candidates, key=lambda path: str(path).lower()):
+        try:
+            resolved_log = log_path.resolve()
+        except OSError:
+            resolved_log = log_path
+        if resolved_log in seen_logs:
+            continue
+        seen_logs.add(resolved_log)
         if not log_path.is_file():
             continue
         try:
@@ -150,6 +162,8 @@ def create_diagnostic_report(
             "\n".join(redact_text(path) for path in missing) or "Отсутствующих шаблонов нет.",
         )
         archive.writestr("errors_only.txt", "\n".join(error_lines[-1000:]) or "Ошибок в логах не найдено.")
+        if screenshot_png:
+            archive.writestr("current_screen.png", screenshot_png)
         for name, content in log_chunks:
             archive.writestr(f"logs/{name}", content)
     return report_path
