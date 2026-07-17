@@ -18,6 +18,7 @@ from doomsdaybot.routines import (
     routine_march_context_key,
     runtime_step_is_ready,
     task_setting_specs,
+    upgrade_prize_hunt_metadata,
     upgrade_radar_runtime_metadata,
     upgrade_resource_runtime_metadata,
     upgrade_strict_runtime_metadata,
@@ -30,6 +31,7 @@ class RoutineTaskTests(unittest.TestCase):
         ids = {task["id"] for task in tasks}
         self.assertTrue(
             {
+                "game_login",
                 "vip_rewards",
                 "alliance_donations",
                 "radar",
@@ -56,6 +58,8 @@ class RoutineTaskTests(unittest.TestCase):
             }.issubset(ids)
         )
         by_id = {task["id"]: task for task in tasks}
+        self.assertFalse(by_id["game_login"]["enabled"])
+        self.assertEqual(by_id["game_login"]["priority"], 1)
         self.assertEqual(by_id["mail_rewards"]["completion_runtime_step"], "claim_reports")
         self.assertEqual(by_id["completed_tasks"]["completion_runtime_step"], "scroll_top_4")
         self.assertEqual(by_id["fence_survivors"]["interval_minutes"], 15.0)
@@ -116,6 +120,48 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertEqual(tasks[index]["id"], "metal")
         next_task, _wait = next_due_task(tasks, {}, now=100.0, active_marches=0, max_marches=5)
         self.assertEqual(next_task["id"], "metal")
+
+    def test_each_exclusive_checkbox_schedules_only_its_task(self):
+        task_ids = (
+            "game_login",
+            "alliance_help",
+            "prize_hunt",
+            "zombie_hunt",
+            "collective_mind",
+            "food",
+            "wood",
+            "metal",
+            "oil",
+        )
+        for selected_id in task_ids:
+            with self.subTest(selected_id=selected_id):
+                tasks = default_routine_tasks()
+                for task in tasks:
+                    task["enabled"] = task["id"] == selected_id
+                index = pick_due_task_index(
+                    tasks,
+                    {},
+                    start_index=0,
+                    now=100.0,
+                    active_marches=0,
+                    max_marches=5,
+                )
+                self.assertIsNotNone(index)
+                self.assertEqual(tasks[index]["id"], selected_id)
+
+    def test_login_precedes_a_selected_daily_task(self):
+        tasks = default_routine_tasks()
+        for task in tasks:
+            task["enabled"] = task["id"] in {"game_login", "alliance_help"}
+        index = pick_due_task_index(
+            tasks,
+            {},
+            start_index=0,
+            now=100.0,
+            active_marches=0,
+            max_marches=5,
+        )
+        self.assertEqual(tasks[index]["id"], "game_login")
 
     def test_enabled_prize_hunt_precedes_regular_resources(self):
         tasks = default_routine_tasks()
@@ -308,6 +354,34 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertEqual(tasks[0]["timeout_seconds"], 20.0)
         self.assertEqual(tasks[1]["timeout_seconds"], 20.0)
         self.assertTrue(by_uid[hunt_uids["march"]]["confirm_disappears"])
+
+    def test_prize_hunt_repeat_never_clicks_the_result_exit_button(self):
+        import uuid
+
+        namespace = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
+        uids = {
+            step: str(uuid.uuid5(namespace, f"prize_hunt:{step}"))
+            for step in ("safe_exit", "safe_exit_current", "again", "match", "confirm")
+        }
+        images = [
+            {"uid": uids["safe_exit"]},
+            {
+                "uid": uids["safe_exit_current"],
+                "complete_if_setting_false": "repeat_until_stopped",
+            },
+            *({"uid": uids[step]} for step in ("again", "match", "confirm")),
+        ]
+        tasks = [{"id": "prize_hunt", "timeout_seconds": 10.0}]
+
+        self.assertEqual(upgrade_prize_hunt_metadata(images, tasks), 5)
+        by_uid = {image["uid"]: image for image in images}
+        self.assertFalse(by_uid[uids["safe_exit"]]["required_setting_value"])
+        self.assertNotIn(
+            "complete_if_setting_false",
+            by_uid[uids["safe_exit_current"]],
+        )
+        self.assertTrue(by_uid[uids["again"]]["required_setting_value"])
+        self.assertEqual(tasks[0]["timeout_seconds"], 1800.0)
 
     def test_hunt_levels_are_left_to_the_game_selection(self):
         zombie_keys = {spec["key"] for spec in task_setting_specs("zombie_hunt")}

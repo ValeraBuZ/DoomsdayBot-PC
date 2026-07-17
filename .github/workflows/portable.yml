@@ -33,7 +33,7 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item config.example.json config.json
-          python build_portable.py
+          python build_portable.py --clean-runtime
           if (-not (Test-Path dist/DoomsdayBotPortable/config.json)) {
             Copy-Item config.example.json dist/DoomsdayBotPortable/config.json
           }
@@ -45,6 +45,25 @@ jobs:
             -Path dist/DoomsdayBotPortable `
             -DestinationPath dist/DoomsdayBotPortable.zip `
             -CompressionLevel Optimal
+
+      - name: Проверить запуск EXE
+        shell: pwsh
+        run: |
+          $process = Start-Process dist/DoomsdayBotPortable/DoomsdayBotPortable.exe -PassThru
+          try {
+            Start-Sleep -Seconds 10
+            $process.Refresh()
+            if ($process.HasExited) {
+              throw "Portable EXE завершился при запуске."
+            }
+            if ($process.MainWindowTitle -like "*Unhandled exception*") {
+              throw "Portable EXE открыл окно необработанной ошибки."
+            }
+          } finally {
+            if (-not $process.HasExited) {
+              Stop-Process -Id $process.Id
+            }
+          }
 
       - name: Сохранить ZIP сборки
         uses: actions/upload-artifact@v4

@@ -92,6 +92,30 @@ class AdbClientTests(unittest.TestCase):
             ["adb.exe", "-s", "emulator-5556", "shell", "input", "keyevent", "67"],
         )
 
+    def test_launch_package_uses_selected_emulator(self):
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append((command, kwargs))
+            return FakeResult(stdout="Events injected: 1\n")
+
+        self.make_client(runner).launch_package("com.igg.android.doomsdaylastsurvivors")
+        self.assertEqual(
+            calls[0][0],
+            [
+                "adb.exe",
+                "-s",
+                "emulator-5556",
+                "shell",
+                "monkey",
+                "-p",
+                "com.igg.android.doomsdaylastsurvivors",
+                "-c",
+                "android.intent.category.LAUNCHER",
+                "1",
+            ],
+        )
+
     def test_list_devices_ignores_configured_serial(self):
         calls = []
 

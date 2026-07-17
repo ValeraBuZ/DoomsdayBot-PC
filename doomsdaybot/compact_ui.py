@@ -8,6 +8,7 @@ from doomsdaybot.routines import effective_task_group, task_setting_specs
 
 
 CATEGORY_TITLES = {
+    "startup": "Запуск",
     "daily": "Ежедневные действия",
     "development": "Развитие",
     "army": "Лечение",
@@ -17,7 +18,7 @@ CATEGORY_TITLES = {
     "custom": "Другие задачи",
 }
 
-CATEGORY_ORDER = ("daily", "development", "army", "training", "marches", "resources", "custom")
+CATEGORY_ORDER = ("startup", "daily", "development", "army", "training", "marches", "resources", "custom")
 
 
 def _center(window, width, height):
@@ -399,8 +400,6 @@ def build_compact_ui(root, bot):
     control.pack(fill=tk.X, pady=(10, 6))
     start_button = ttk.Button(control, text="Запустить выбранное", style="Primary.TButton", command=bot.start_routines)
     start_button.pack(side=tk.LEFT)
-    prize_button = ttk.Button(control, text="Охота за призом", command=bot.start_prize_hunt_loop)
-    prize_button.pack(side=tk.LEFT, padx=6)
     pause_button = ttk.Button(control, text="Пауза", command=bot.toggle_pause)
     pause_button.pack(side=tk.LEFT, padx=6)
     stop_button = ttk.Button(control, text="Стоп", style="Danger.TButton", command=bot.stop)
@@ -531,13 +530,11 @@ def build_compact_ui(root, bot):
     def update_state():
         if bot.is_running:
             start_button.configure(state=tk.DISABLED)
-            prize_button.configure(state=tk.DISABLED)
             pause_button.configure(state=tk.NORMAL, text="Продолжить" if bot.is_paused else "Пауза")
             stop_button.configure(state=tk.NORMAL)
         else:
             ready_state = tk.DISABLED if check_busy["value"] else tk.NORMAL
             start_button.configure(state=ready_state)
-            prize_button.configure(state=ready_state)
             pause_button.configure(state=tk.DISABLED, text="Пауза")
             stop_button.configure(state=tk.DISABLED)
         root.compact_after_id = root.after(500, update_state)

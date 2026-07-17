@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import shutil
 import subprocess
 import sys
@@ -113,11 +114,12 @@ def run_pyinstaller():
     )
 
 
-def finalize_portable_layout():
+def finalize_portable_layout(preserve_runtime=True):
     (STAGE_DIR / "img").mkdir(parents=True, exist_ok=True)
     (STAGE_DIR / "backups" / "config").mkdir(parents=True, exist_ok=True)
     stage_runtime_config()
-    preserve_runtime_data()
+    if preserve_runtime:
+        preserve_runtime_data()
     if MANUAL_PATH.exists():
         shutil.copy2(MANUAL_PATH, STAGE_DIR / MANUAL_PATH.name)
     (STAGE_DIR / "START_HERE.txt").write_text(
@@ -169,10 +171,17 @@ def remove_temporary_build_files():
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--clean-runtime",
+        action="store_true",
+        help="Do not copy config, templates, logs or reports from an older dist build.",
+    )
+    args = parser.parse_args()
     ensure_clean_target()
     write_spec()
     run_pyinstaller()
-    finalize_portable_layout()
+    finalize_portable_layout(preserve_runtime=not args.clean_runtime)
     remove_temporary_build_files()
     print(f"Portable folder ready: {DIST_DIR}")
     print(f"Portable archive ready: {ARCHIVE_PATH}")

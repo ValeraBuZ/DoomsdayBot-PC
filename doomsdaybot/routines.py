@@ -91,6 +91,20 @@ RADAR_STEP_PRIORITIES = {
 
 DEFAULT_ROUTINE_TASKS = (
     {
+        "id": "game_login",
+        "name": "Вход в игру",
+        "group": "Вход в игру",
+        "category": "startup",
+        "enabled": False,
+        "uses_march": False,
+        "priority": 1,
+        "interval_minutes": 1440.0,
+        "timeout_seconds": 45.0,
+        "march_duration_minutes": 30.0,
+        "completion_uid": "",
+        "settings": {},
+    },
+    {
         "id": "alliance_help",
         "name": "Помощь альянсу",
         "group": "Помощь альянсу",
@@ -686,6 +700,59 @@ def upgrade_strict_runtime_metadata(images, tasks):
         if task.get("id") in STRICT_RUNTIME_SEQUENCES:
             task["timeout_seconds"] = max(
                 20.0,
+                float(task.get("timeout_seconds", 0.0) or 0.0),
+            )
+    return upgraded
+
+
+def upgrade_prize_hunt_metadata(images, tasks):
+    """Keep the defeat and repeat buttons on separate safe branches."""
+    images_by_uid = {str(image.get("uid") or ""): image for image in images}
+    upgraded = 0
+
+    safe_exit = images_by_uid.get(
+        str(uuid.uuid5(PROFILE_NAMESPACE, "prize_hunt:safe_exit"))
+    )
+    if safe_exit is not None:
+        safe_exit.update(
+            {
+                "required_setting_key": "repeat_until_stopped",
+                "required_setting_value": False,
+                "complete_if_setting_false": "repeat_until_stopped",
+                "routine_priority": 20,
+            }
+        )
+        upgraded += 1
+
+    revive_exit = images_by_uid.get(
+        str(uuid.uuid5(PROFILE_NAMESPACE, "prize_hunt:safe_exit_current"))
+    )
+    if revive_exit is not None:
+        revive_exit.pop("required_setting_key", None)
+        revive_exit.pop("required_setting_value", None)
+        revive_exit.pop("complete_if_setting_false", None)
+        revive_exit["routine_priority"] = 10
+        upgraded += 1
+
+    for priority, step_id in enumerate(("again", "match", "confirm"), start=20):
+        image = images_by_uid.get(
+            str(uuid.uuid5(PROFILE_NAMESPACE, f"prize_hunt:{step_id}"))
+        )
+        if image is None:
+            continue
+        image.update(
+            {
+                "required_setting_key": "repeat_until_stopped",
+                "required_setting_value": True,
+                "routine_priority": priority,
+            }
+        )
+        upgraded += 1
+
+    for task in tasks:
+        if task.get("id") == "prize_hunt":
+            task["timeout_seconds"] = max(
+                1800.0,
                 float(task.get("timeout_seconds", 0.0) or 0.0),
             )
     return upgraded

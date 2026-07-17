@@ -116,6 +116,26 @@ class AdbClient:
     def keyevent(self, key_code):
         self._run(["shell", "input", "keyevent", int(key_code)], timeout=5)
 
+    def launch_package(self, package_name):
+        package = str(package_name or "").strip()
+        if not package:
+            raise AdbError("Не указано имя пакета Android.")
+        output = self._run(
+            [
+                "shell",
+                "monkey",
+                "-p",
+                package,
+                "-c",
+                "android.intent.category.LAUNCHER",
+                "1",
+            ],
+            timeout=15,
+        )
+        if "No activities found" in str(output or ""):
+            raise AdbError(f"Приложение {package} не найдено на устройстве.")
+        return output
+
     def list_devices(self):
         original_serial = self.serial
         self.serial = ""

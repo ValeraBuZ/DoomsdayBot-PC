@@ -18,6 +18,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from doomsdaybot.routines import (
     default_routine_tasks,
     upgrade_radar_runtime_metadata,
+    upgrade_prize_hunt_metadata,
     upgrade_resource_runtime_metadata,
     upgrade_strict_runtime_metadata,
 )
@@ -1098,7 +1099,7 @@ def build_profile(destination):
     manifest = {
         "format": "doomsday-training-profile",
         "format_version": 1,
-        "app_version": "3.1.6",
+        "app_version": "3.1.7",
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "source_screen": {"width": 1280, "height": 720},
         "routine_tasks": tasks,
@@ -1744,7 +1745,9 @@ def build_profile(destination):
         if step_id in {"again", "match", "confirm"}:
             configured_image["required_setting_key"] = "repeat_until_stopped"
             configured_image["required_setting_value"] = True
-        if step_id.startswith("safe_exit"):
+        if step_id == "safe_exit":
+            configured_image["required_setting_key"] = "repeat_until_stopped"
+            configured_image["required_setting_value"] = False
             configured_image["complete_if_setting_false"] = "repeat_until_stopped"
         manifest["images"].append(configured_image)
         payloads.append((output_path, entry_name))
@@ -1796,6 +1799,7 @@ def build_profile(destination):
 
     upgrade_resource_runtime_metadata(manifest["images"], tasks)
     upgrade_strict_runtime_metadata(manifest["images"], tasks)
+    upgrade_prize_hunt_metadata(manifest["images"], tasks)
     upgrade_radar_runtime_metadata(manifest["images"], tasks)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:

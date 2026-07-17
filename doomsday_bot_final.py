@@ -57,6 +57,7 @@ from doomsdaybot.routines import (
     routine_march_context_key,
     runtime_step_is_ready,
     upgrade_radar_runtime_metadata,
+    upgrade_prize_hunt_metadata,
     upgrade_resource_runtime_metadata,
     upgrade_strict_runtime_metadata,
 )
@@ -64,13 +65,16 @@ from doomsdaybot.state import BotState, compute_runtime_seconds
 from doomsdaybot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.1.6"
+APP_VERSION = "3.1.7"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
 TRASH_DIR = IMG_DIR / "_trash"
 SYSTEM_TEMPLATE_GROUP = "Системные окна"
 ACCOUNT_SWITCH_TEMPLATE_GROUP = "Переключение аккаунта"
+GAME_PACKAGE = "com.igg.android.doomsdaylastsurvivors"
+GAME_LOGIN_MINIMUM_SECONDS = 35.0
+GAME_LOGIN_STABLE_SECONDS = 8.0
 
 logger = configure_logging(APP_DIR / "bot.log")
 
@@ -200,6 +204,7 @@ LANGUAGES = {
         'routine_start': "Старт рутины",
         'routine_settings': "Настроить задачи",
         'routine_help': "Сначала лечение, затем заполнение свободных походов ресурсами по кругу.",
+        'routine_name_game_login': "Вход в игру",
         'routine_name_heal': "Лечение войск",
         'routine_name_prize_hunt': "Охота за призом",
         'routine_name_food': "Еда",
@@ -402,6 +407,7 @@ LANGUAGES = {
         'routine_start': "Start routines",
         'routine_settings': "Configure tasks",
         'routine_help': "Healing runs first, then free marches are filled with resources in rotation.",
+        'routine_name_game_login': "Launch game",
         'routine_name_heal': "Heal troops",
         'routine_name_prize_hunt': "Prize hunt",
         'routine_name_food': "Food",
@@ -578,6 +584,7 @@ class AutoClicker:
         self.routine_next_run = {}
         self.current_routine_index = 0
         self.current_routine_task_id = None
+        self.routine_task_started_at = 0.0
         self.routine_last_action_time = time.time()
         self.routine_current_had_action = False
         self.routine_current_action_count = 0
@@ -1219,6 +1226,28 @@ class AutoClicker:
         self.test_search_thread.start()
         return True
 
+    def _launch_game_for_login(self):
+        if not self.uses_adb:
+            self.set_status_message(
+                "Вход в игру: ожидаю открытое окно и возвращаюсь на главный экран",
+                force=True,
+            )
+            return True
+        try:
+            if self.adb_client is None:
+                self._refresh_adb_client()
+            self.set_status_message("Вход в игру: запускаю Doomsday", force=True)
+            self.adb_client.launch_package(GAME_PACKAGE)
+            self._adb_frame_cache = None
+            self._adb_frame_timestamp = 0.0
+            self._interruptible_sleep(5.0)
+            self.routine_last_action_time = time.time()
+            return True
+        except AdbError as exc:
+            logger.error("Не удалось запустить игру через ADB: %s", exc)
+            self.set_status_message(f"Не удалось запустить игру: {exc}", force=True)
+            return False
+
     def _test_search_worker(self):
         current_group = None
         if self.routine_mode:
@@ -1507,6 +1536,7 @@ class AutoClicker:
 
         matching = manifest.get("matching", {})
         upgrade_strict_runtime_metadata(self.search_images, self.routine_tasks)
+        upgrade_prize_hunt_metadata(self.search_images, self.routine_tasks)
         upgrade_radar_runtime_metadata(self.search_images, self.routine_tasks)
         self.scale_enabled = bool(matching.get("scale_enabled", self.scale_enabled))
         self.scale_min = float(matching.get("scale_min", self.scale_min))
@@ -1643,6 +1673,12 @@ class AutoClicker:
                     )
                     if upgraded_strict:
                         logger.info("Strict runtime sequence upgraded for %s templates", upgraded_strict)
+                    upgraded_prize = upgrade_prize_hunt_metadata(
+                        self.search_images,
+                        self.routine_tasks,
+                    )
+                    if upgraded_prize:
+                        logger.info("Prize hunt branches upgraded for %s templates", upgraded_prize)
                     upgraded_radar = upgrade_radar_runtime_metadata(
                         self.search_images,
                         self.routine_tasks,
@@ -2095,7 +2131,7 @@ class AutoClicker:
         for task in self.routine_tasks:
             runtime_task = dict(task)
             runtime_task["group"] = effective_task_group(task)
-            has_templates = any(
+            has_templates = task.get("id") == "game_login" or any(
                 image.get("group") == runtime_task["group"] and image.get("enabled", True)
                 for image in self.search_images
             )
@@ -2173,6 +2209,7 @@ class AutoClicker:
         task = runtime_tasks[index]
         self.current_routine_index = index
         self.current_routine_task_id = task["id"]
+        self.routine_task_started_at = now
         self.routine_last_action_time = now
         self.routine_current_had_action = False
         self.routine_current_action_count = 0
@@ -2190,6 +2227,9 @@ class AutoClicker:
             ),
             force=True,
         )
+        if task.get("id") == "game_login" and not self._launch_game_for_login():
+            self._defer_current_routine_no_action(now)
+            return None
         return task
 
     def _routine_idle_completion_ready(self, task):
@@ -2415,7 +2455,11 @@ class AutoClicker:
         if not enabled_tasks:
             self._show_notification('warning', 'routine_no_enabled')
             return False
-        if not any(self.get_routine_templates(task, active_only=True) for task in enabled_tasks):
+        if not any(
+            task.get("id") == "game_login"
+            or self.get_routine_templates(task, active_only=True)
+            for task in enabled_tasks
+        ):
             self.set_status_message(self.tr('routine_no_templates'), force=True)
             self._show_notification('warning', 'routine_no_templates')
             return False
@@ -2707,9 +2751,12 @@ class AutoClicker:
                             and image_is_allowed_for_routine(
                                 img,
                                 current_routine_task.get("id"),
-                                routine_started=bool(
-                                    self.routine_current_had_action
-                                    or self.routine_completed_steps
+                                routine_started=(
+                                    current_routine_task.get("id") != "game_login"
+                                    and bool(
+                                        self.routine_current_had_action
+                                        or self.routine_completed_steps
+                                    )
                                 ),
                             )
                         )
@@ -2930,6 +2977,9 @@ class AutoClicker:
                                         )
                                     refresh_after_action = True
                                 elif self.routine_mode and is_system_template:
+                                    if current_routine_task.get("id") == "game_login":
+                                        self.routine_last_action_time = time.time()
+                                        self.routine_idle_confirmation_count = 0
                                     refresh_after_action = True
                                 if self.anti_loop_enabled:
                                     default_block = cooldown if img_config.get("allow_repeat", False) else self.block_duration
@@ -2959,6 +3009,22 @@ class AutoClicker:
                     if refresh_after_action or self.current_routine_task_id is None:
                         continue
                     idle = time.time() - self.routine_last_action_time
+                    if current_routine_task.get("id") == "game_login":
+                        if self._is_main_screen_visible():
+                            self.routine_idle_confirmation_count += 1
+                            task_elapsed = time.time() - self.routine_task_started_at
+                            if (
+                                task_elapsed >= GAME_LOGIN_MINIMUM_SECONDS
+                                and idle >= GAME_LOGIN_STABLE_SECONDS
+                                and self.routine_idle_confirmation_count >= 3
+                            ):
+                                self.set_status_message(
+                                    "Вход в игру выполнен: главный экран стабилен",
+                                    force=True,
+                                )
+                                self._finish_current_routine(time.time())
+                            continue
+                        self.routine_idle_confirmation_count = 0
                     timeout = float(current_routine_task.get("timeout_seconds", 8.0))
                     if not action_occurred and no_available_squad_wait_exceeded(
                         current_routine_task,
@@ -2968,6 +3034,17 @@ class AutoClicker:
                         self._defer_current_routine_no_squad(time.time())
                         continue
                     if not action_occurred and idle >= timeout:
+                        if current_routine_task.get("id") == "game_login":
+                            self.routine_home_recovery_attempted = True
+                            self.set_status_message(
+                                "Вход в игру: возвращаюсь на главный экран",
+                                force=True,
+                            )
+                            if self._return_to_main_screen(max_back_steps=5):
+                                self._finish_current_routine(time.time())
+                            else:
+                                self._defer_current_routine_no_action(time.time())
+                            continue
                         if routine_home_recovery_due(
                             current_routine_task,
                             self.routine_current_had_action,
