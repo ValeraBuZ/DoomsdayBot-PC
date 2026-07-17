@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timezone
+import uuid
 
 from doomsdaybot.routines import (
     completed_runtime_steps_for_image,
@@ -22,6 +23,7 @@ from doomsdaybot.routines import (
     task_setting_specs,
     upgrade_prize_hunt_metadata,
     upgrade_radar_runtime_metadata,
+    upgrade_repeatable_claim_metadata,
     upgrade_resource_runtime_metadata,
     upgrade_strict_runtime_metadata,
 )
@@ -210,9 +212,40 @@ class RoutineTaskTests(unittest.TestCase):
         task = next(task for task in default_routine_tasks() if task["id"] == "alliance_donations")
         self.assertFalse(task["enabled"])
         self.assertTrue(task["settings"]["avoid_gems"])
-        self.assertEqual(task["settings"]["max_donations"], 30)
+        self.assertEqual(task["settings"]["max_donations"], 100)
         self.assertEqual(task["settings"]["max_project_checks"], 5)
         self.assertEqual(task["interval_minutes"], 20.0)
+
+    def test_repeatable_claims_guard_task_closing(self):
+        namespace = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
+        donate_uid = str(uuid.uuid5(namespace, "alliance_donations:donate_resources"))
+        donation_close_uid = str(uuid.uuid5(namespace, "alliance_donations:close_project"))
+        vip_claim_uid = str(uuid.uuid5(namespace, "vip_rewards:claim_chest"))
+        vip_dismiss_uid = str(uuid.uuid5(namespace, "vip_rewards:dismiss_info"))
+        vip_close_uid = str(uuid.uuid5(namespace, "vip_rewards:close_vip"))
+        images = [
+            {"uid": donate_uid},
+            {"uid": donation_close_uid},
+            {"uid": vip_claim_uid},
+            {"uid": vip_dismiss_uid},
+            {"uid": vip_close_uid},
+        ]
+        tasks = default_routine_tasks()
+        donation_task = next(task for task in tasks if task["id"] == "alliance_donations")
+        donation_task["settings"]["max_donations"] = 30
+
+        upgrade_repeatable_claim_metadata(images, tasks)
+        by_uid = {image["uid"]: image for image in images}
+
+        self.assertTrue(by_uid[donate_uid]["allow_repeat"])
+        self.assertIn(donate_uid, by_uid[donation_close_uid]["skip_if_visible_uids"])
+        self.assertTrue(by_uid[vip_claim_uid]["allow_repeat"])
+        self.assertTrue(by_uid[vip_dismiss_uid]["allow_repeat"])
+        self.assertEqual(
+            by_uid[vip_close_uid]["skip_if_visible_uids"],
+            [vip_claim_uid, vip_dismiss_uid],
+        )
+        self.assertEqual(donation_task["settings"]["max_donations"], 100)
 
     def test_next_run_uses_task_interval(self):
         task = {"interval_minutes": 2.5}

@@ -235,7 +235,7 @@ DEFAULT_ROUTINE_TASKS = (
         "march_duration_minutes": 30.0,
         "completion_uid": "",
         "settings": {
-            "max_donations": 30,
+            "max_donations": 100,
             "max_project_checks": 5,
             "avoid_gems": True,
         },
@@ -695,6 +695,60 @@ def upgrade_resource_runtime_metadata(images, tasks):
     for task in tasks:
         if task.get("id") in RESOURCE_TASK_IDS:
             task["timeout_seconds"] = max(30.0, float(task.get("timeout_seconds", 0.0) or 0.0))
+    return upgraded
+
+
+def upgrade_repeatable_claim_metadata(images, tasks):
+    """Keep claim screens open until every available free action is exhausted."""
+    images_by_uid = {str(image.get("uid") or ""): image for image in images}
+    upgraded = 0
+
+    alliance_donate_uid = str(
+        uuid.uuid5(PROFILE_NAMESPACE, "alliance_donations:donate_resources")
+    )
+    alliance_close_uid = str(
+        uuid.uuid5(PROFILE_NAMESPACE, "alliance_donations:close_project")
+    )
+    vip_claim_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "vip_rewards:claim_chest"))
+    vip_dismiss_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "vip_rewards:dismiss_info"))
+    vip_close_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "vip_rewards:close_vip"))
+
+    repeatable = {
+        alliance_donate_uid: 0.8,
+        vip_claim_uid: 1.0,
+        vip_dismiss_uid: 0.8,
+    }
+    for uid, block_seconds in repeatable.items():
+        image = images_by_uid.get(uid)
+        if image is None:
+            continue
+        image["allow_repeat"] = True
+        image["block_seconds"] = block_seconds
+        upgraded += 1
+
+    guarded_closers = {
+        alliance_close_uid: [alliance_donate_uid],
+        vip_close_uid: [vip_claim_uid, vip_dismiss_uid],
+    }
+    for uid, guard_uids in guarded_closers.items():
+        image = images_by_uid.get(uid)
+        if image is None:
+            continue
+        existing = image.get("skip_if_visible_uids") or []
+        if isinstance(existing, str):
+            existing = [existing]
+        image["skip_if_visible_uids"] = list(dict.fromkeys([*existing, *guard_uids]))
+        upgraded += 1
+
+    for task in tasks:
+        if task.get("id") != "alliance_donations":
+            continue
+        settings = task.setdefault("settings", {})
+        settings["max_donations"] = max(
+            100,
+            int(settings.get("max_donations", 0) or 0),
+        )
+
     return upgraded
 
 

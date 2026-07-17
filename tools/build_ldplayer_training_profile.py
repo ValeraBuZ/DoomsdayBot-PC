@@ -1206,8 +1206,19 @@ def build_profile(destination):
                 configured_image["limit_key"] = "max_project_checks"
                 configured_image["allow_repeat"] = True
                 configured_image["block_seconds"] = 1.0
+                configured_image["skip_if_visible_uids"] = [
+                    str(uuid.uuid5(PROFILE_NAMESPACE, "alliance_donations:donate_resources"))
+                ]
             if task_id == "alliance_donations" and step_id == "open_alliance":
                 configured_image["home_screen_marker"] = True
+            if task_id == "vip_rewards" and step_id in {"claim_chest", "dismiss_info"}:
+                configured_image["allow_repeat"] = True
+                configured_image["block_seconds"] = 1.0 if step_id == "claim_chest" else 0.8
+            if task_id == "vip_rewards" and step_id == "close_vip":
+                configured_image["skip_if_visible_uids"] = [
+                    str(uuid.uuid5(PROFILE_NAMESPACE, "vip_rewards:claim_chest")),
+                    str(uuid.uuid5(PROFILE_NAMESPACE, "vip_rewards:dismiss_info")),
+                ]
             if task_id == "radar":
                 configured_image["allow_repeat"] = True
                 configured_image["block_seconds"] = 2.0

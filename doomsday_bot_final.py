@@ -60,6 +60,7 @@ from doomsdaybot.routines import (
     runtime_step_is_ready,
     upgrade_radar_runtime_metadata,
     upgrade_prize_hunt_metadata,
+    upgrade_repeatable_claim_metadata,
     upgrade_resource_runtime_metadata,
     upgrade_strict_runtime_metadata,
 )
@@ -67,7 +68,7 @@ from doomsdaybot.state import BotState, compute_runtime_seconds
 from doomsdaybot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.1.9"
+APP_VERSION = "3.1.10"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -1645,6 +1646,7 @@ class AutoClicker:
         upgrade_strict_runtime_metadata(self.search_images, self.routine_tasks)
         upgrade_prize_hunt_metadata(self.search_images, self.routine_tasks)
         upgrade_radar_runtime_metadata(self.search_images, self.routine_tasks)
+        upgrade_repeatable_claim_metadata(self.search_images, self.routine_tasks)
         self.scale_enabled = bool(matching.get("scale_enabled", self.scale_enabled))
         self.scale_min = float(matching.get("scale_min", self.scale_min))
         self.scale_max = float(matching.get("scale_max", self.scale_max))
@@ -1792,6 +1794,12 @@ class AutoClicker:
                     )
                     if upgraded_radar:
                         logger.info("Radar template priorities upgraded for %s templates", upgraded_radar)
+                    upgraded_claims = upgrade_repeatable_claim_metadata(
+                        self.search_images,
+                        self.routine_tasks,
+                    )
+                    if upgraded_claims:
+                        logger.info("Repeatable reward guards upgraded for %s templates", upgraded_claims)
 
                     self.stats = {img['path']: 0 for img in self.search_images}
                     logger.info(f"Загружено {len(self.search_images)} областей из конфига")
@@ -3016,8 +3024,14 @@ class AutoClicker:
                             )
                             if not guard_image:
                                 continue
-                            guard_location, _guard_bbox, _guard_confidence = self._locate_image(guard_image)
-                            if guard_location:
+                            guard_location, guard_bbox, _guard_confidence = self._locate_image(guard_image)
+                            guard_is_valid = False
+                            if guard_location and guard_bbox:
+                                guard_is_valid, _guard_reject_reason = self._validate_detected_match(
+                                    guard_image,
+                                    guard_bbox,
+                                )
+                            if guard_is_valid:
                                 logger.debug(
                                     "Пропуск %s: защитный шаблон %s уже виден",
                                     img_config.get("description"),
@@ -3383,7 +3397,9 @@ class AutoClicker:
                     self.adb_client.tap(resource_x, resource_y)
                 else:
                     pyautogui.click(resource_x, resource_y)
-                time.sleep(0.35)
+                self._interruptible_sleep(0.5)
+                if self.stop_event.is_set() or self.stop_hotkey_pressed:
+                    return False
             minus_x = int(round(target_x - 146 * display.scale_x))
             minus_y = int(round(target_y - 76 * display.scale_y))
             plus_x = int(round(target_x + 144 * display.scale_x))
@@ -3391,23 +3407,37 @@ class AutoClicker:
             if self.uses_adb:
                 for _ in range(7):
                     self.adb_client.tap(plus_x, plus_y)
-                    time.sleep(0.05)
+                    self._interruptible_sleep(0.18)
+                    if self.stop_event.is_set() or self.stop_hotkey_pressed:
+                        return False
+                self._interruptible_sleep(0.4)
                 for _ in range(8 - level):
                     self.adb_client.tap(minus_x, minus_y)
-                    time.sleep(0.05)
+                    self._interruptible_sleep(0.18)
+                    if self.stop_event.is_set() or self.stop_hotkey_pressed:
+                        return False
                 self.adb_client.tap(int(round(target_x)), int(round(target_y)))
-                time.sleep(2.0)
+                self._interruptible_sleep(2.0)
+                if self.stop_event.is_set() or self.stop_hotkey_pressed:
+                    return False
                 frame = self.adb_client.screenshot_bgr()
                 self.adb_client.tap(frame.shape[1] // 2, int(round(frame.shape[0] * 0.49)))
             else:
                 for _ in range(7):
                     pyautogui.click(plus_x, plus_y)
-                    time.sleep(0.05)
+                    self._interruptible_sleep(0.18)
+                    if self.stop_event.is_set() or self.stop_hotkey_pressed:
+                        return False
+                self._interruptible_sleep(0.4)
                 for _ in range(8 - level):
                     pyautogui.click(minus_x, minus_y)
-                    time.sleep(0.05)
+                    self._interruptible_sleep(0.18)
+                    if self.stop_event.is_set() or self.stop_hotkey_pressed:
+                        return False
                 pyautogui.click(target_x, target_y)
-                time.sleep(2.0)
+                self._interruptible_sleep(2.0)
+                if self.stop_event.is_set() or self.stop_hotkey_pressed:
+                    return False
                 width, height = pyautogui.size()
                 pyautogui.click(width // 2, int(round(height * 0.49)))
             self._invalidate_capture()
