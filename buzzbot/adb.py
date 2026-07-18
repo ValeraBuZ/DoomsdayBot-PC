@@ -127,6 +127,12 @@ class AdbClient:
     def keyevent(self, key_code):
         self._run(["shell", "input", "keyevent", int(key_code)], timeout=5)
 
+    def force_stop_package(self, package_name):
+        package = str(package_name or "").strip()
+        if not package:
+            raise AdbError("Не указано имя пакета Android.")
+        self._run(["shell", "am", "force-stop", package], timeout=10)
+
     def launch_package(self, package_name):
         package = str(package_name or "").strip()
         if not package:

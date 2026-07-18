@@ -81,6 +81,21 @@ def detect_radar_notification_targets(frame_bgr):
     return sorted(set(targets), key=lambda point: (point[1], point[0]))
 
 
+def radar_marker_has_notification(frame_bgr, bbox, padding=24):
+    """Return whether a radar marker match contains a nearby red notification dot."""
+    if not bbox or len(bbox) != 4:
+        return False
+    left, top, width, height = map(int, bbox)
+    margin = max(0, int(padding))
+    right = left + width
+    bottom = top + height
+    return any(
+        left - margin <= target_x <= right + margin
+        and top - margin <= target_y <= bottom + margin
+        for target_x, target_y in detect_radar_notification_targets(frame_bgr)
+    )
+
+
 def detect_radar_card_action_target(frame_bgr):
     """Return the center of an enabled yellow action button on a radar card."""
     frame, scale_x, scale_y = _reference_frame(frame_bgr)

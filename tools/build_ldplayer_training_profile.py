@@ -85,6 +85,14 @@ COMMON_STEPS = (
 
 SYSTEM_STEPS = (
     (
+        "connection_interrupted",
+        "Повторить вход после разрыва соединения",
+        "zZuB2_connection_interrupted.png",
+        (344, 294, 936, 540),
+        (0, 91),
+        False,
+    ),
+    (
         "idle_collect_confirm",
         "Подтвердить автосбор",
         "current_screen.png",
@@ -1009,8 +1017,9 @@ GATHERING_BOOST_STEPS = {
     "active": ("FocusFarm_boost_active.png", (89, 125, 143, 181)),
     "open_bag": ("base_live_now.png", (837, 601, 919, 707)),
     "boost_category": ("bag.png", (0, 267, 165, 347)),
-    "boost_8h": ("boosts.png", (606, 123, 725, 246)),
-    "boost_24h": ("boosts.png", (746, 123, 858, 246)),
+    # Inventory counts change between accounts, so keep them outside the match crop.
+    "boost_8h": ("boosts.png", (606, 123, 725, 205)),
+    "boost_24h": ("boosts.png", (746, 123, 858, 205)),
     "use": ("boost_gather_selected.png", (943, 633, 1208, 681)),
 }
 
@@ -1117,7 +1126,7 @@ def build_profile(destination):
     manifest = {
         "format": "doomsday-training-profile",
         "format_version": 1,
-        "app_version": "3.2.2",
+        "app_version": "3.2.3",
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "source_screen": {"width": 1280, "height": 720},
         "routine_tasks": tasks,
@@ -1173,9 +1182,14 @@ def build_profile(destination):
         system_image = image_config(uid, entry_name, SYSTEM_GROUP, description, offset, grayscale, 0.8)
         system_image["allow_repeat"] = True
         system_image["block_seconds"] = 3.0
-        if step_id in {"glory_league_close", "beast_taming_close", "google_play_cancel"}:
+        if step_id in {
+            "connection_interrupted",
+            "glory_league_close",
+            "beast_taming_close",
+            "google_play_cancel",
+        }:
             system_image["startup_only"] = True
-        if step_id == "google_play_cancel":
+        if step_id in {"connection_interrupted", "google_play_cancel"}:
             system_image["delay"] = 8.0
         manifest["images"].append(system_image)
         payloads.append((output_path, entry_name))
@@ -1301,6 +1315,41 @@ def build_profile(destination):
                     configured_image["delay"] = 0.5
                 if step_id == "attack_zombie":
                     configured_image["action"] = "zombie_attack"
+                if step_id in {
+                    "collect_completed",
+                    "collect_supply",
+                    "attack_zombie",
+                    "rescue_survivors",
+                    "transport_supplies",
+                    "confirm_transport",
+                }:
+                    configured_image["requires_runtime_steps"] = ["radar_forward"]
+                    configured_image["delay"] = 1.5
+                if step_id == "create_squad":
+                    configured_image["runtime_step"] = "radar_squad"
+                    configured_image["requires_runtime_steps"] = ["radar_action"]
+                    configured_image["allow_runtime_resume"] = True
+                if step_id == "march":
+                    configured_image["runtime_step"] = "radar_march"
+                    configured_image["requires_runtime_steps"] = [
+                        "radar_squad",
+                        "radar_action",
+                    ]
+                    configured_image["runtime_step_mode"] = "any"
+                    configured_image["allow_runtime_resume"] = True
+                if step_id == "close_region_search":
+                    configured_image["requires_runtime_steps"] = [
+                        "radar_action",
+                        "radar_march",
+                    ]
+                    configured_image["runtime_step_mode"] = "any"
+                if step_id == "return_shelter":
+                    configured_image["action"] = "radar_return_shelter"
+                    configured_image["requires_runtime_steps"] = [
+                        "radar_action",
+                        "radar_march",
+                    ]
+                    configured_image["runtime_step_mode"] = "any"
             if task_id == "heal" and step_id == "open_wounded":
                 configured_image["confidence"] = 0.74
                 configured_image["orb_match_threshold"] = 3
@@ -1784,6 +1833,8 @@ def build_profile(destination):
         if required_hours is not None:
             configured_image["required_setting_key"] = "boost_hours"
             configured_image["required_setting_value"] = required_hours
+            if required_hours == 24:
+                configured_image["allow_higher_setting_fallback"] = True
         manifest["images"].append(configured_image)
         payloads.append((output_path, entry_name))
         boost_completion_uid = uid

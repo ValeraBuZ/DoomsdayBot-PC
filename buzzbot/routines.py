@@ -97,6 +97,15 @@ RADAR_STEP_PRIORITIES = {
     "task_fist_current": 86,
 }
 
+RADAR_CARD_RUNTIME_STEPS = frozenset(
+    {
+        "radar_forward",
+        "radar_action",
+        "radar_squad",
+        "radar_march",
+    }
+)
+
 
 DEFAULT_ROUTINE_TASKS = (
     {
@@ -108,7 +117,7 @@ DEFAULT_ROUTINE_TASKS = (
         "uses_march": False,
         "priority": 1,
         "interval_minutes": 1440.0,
-        "timeout_seconds": 45.0,
+        "timeout_seconds": 90.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
         "settings": {},
@@ -257,7 +266,7 @@ DEFAULT_ROUTINE_TASKS = (
         "uses_march": False,
         "priority": 30,
         "interval_minutes": 720.0,
-        "timeout_seconds": 15.0,
+        "timeout_seconds": 12.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
         "complete_when_idle": True,
@@ -574,6 +583,23 @@ def runtime_step_is_ready(image, completed_steps):
     return all(step in completed for step in required)
 
 
+def setting_requirement_matches(image, settings):
+    """Check a template setting, optionally allowing a safer longer duration."""
+    key = str(image.get("required_setting_key") or "")
+    if not key:
+        return True
+    required = image.get("required_setting_value")
+    current = (settings or {}).get(key)
+    if str(current) == str(required):
+        return True
+    if not image.get("allow_higher_setting_fallback"):
+        return False
+    try:
+        return float(required) > float(current)
+    except (TypeError, ValueError):
+        return False
+
+
 def completed_runtime_steps_for_image(image):
     """Return the current step and any predecessors implied by its screen."""
     implied = image.get("implied_runtime_steps", ())
@@ -584,6 +610,11 @@ def completed_runtime_steps_for_image(image):
     if own_step:
         completed.add(own_step)
     return completed
+
+
+def reset_radar_card_runtime_steps(completed_steps):
+    """Forget the previous radar card before opening another marker."""
+    completed_steps.difference_update(RADAR_CARD_RUNTIME_STEPS)
 
 
 def image_is_allowed_for_routine(image, task_id, routine_started=False):
@@ -1004,6 +1035,12 @@ def upgrade_strict_runtime_metadata(images, tasks):
         )
         upgraded += 1
 
+    boost_24h_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "gathering_boost:boost_24h"))
+    boost_24h = images_by_uid.get(boost_24h_uid)
+    if boost_24h is not None:
+        boost_24h["allow_higher_setting_fallback"] = True
+        upgraded += 1
+
     for task in tasks:
         if task.get("id") in STRICT_RUNTIME_SEQUENCES:
             task["timeout_seconds"] = max(
@@ -1226,11 +1263,29 @@ def upgrade_radar_runtime_metadata(images, tasks):
         }:
             image["runtime_step"] = "radar_action"
             image["repeat_runtime_step"] = True
+            image["requires_runtime_steps"] = ["radar_forward"]
+            image["delay"] = max(1.5, float(image.get("delay", 0.0) or 0.0))
+        elif step_id == "create_squad":
+            image["runtime_step"] = "radar_squad"
+            image["requires_runtime_steps"] = ["radar_action"]
+            image["allow_runtime_resume"] = True
+        elif step_id == "march":
+            image["runtime_step"] = "radar_march"
+            image["requires_runtime_steps"] = ["radar_squad", "radar_action"]
+            image["runtime_step_mode"] = "any"
+            image["allow_runtime_resume"] = True
+        elif step_id == "close_region_search":
+            image["requires_runtime_steps"] = ["radar_action", "radar_march"]
+            image["runtime_step_mode"] = "any"
+        elif step_id == "return_shelter":
+            image["action"] = "radar_return_shelter"
+            image["requires_runtime_steps"] = ["radar_action", "radar_march"]
+            image["runtime_step_mode"] = "any"
         upgraded += 1
 
     for task in tasks:
         if task.get("id") == "radar":
-            task["timeout_seconds"] = max(20.0, float(task.get("timeout_seconds", 0.0) or 0.0))
+            task["timeout_seconds"] = max(12.0, float(task.get("timeout_seconds", 0.0) or 0.0))
             task["interval_minutes"] = 720.0
             task["complete_when_idle"] = True
             task["idle_confirmations"] = max(3, int(task.get("idle_confirmations", 0) or 0))

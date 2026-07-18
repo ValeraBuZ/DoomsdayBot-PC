@@ -12,6 +12,7 @@ from buzzbot.matching import (
     detect_radar_world_action_target,
     healing_auto_fill_is_checked,
     imread_unicode,
+    radar_marker_has_notification,
     zombie_camp_checkbox_is_checked,
 )
 
@@ -47,6 +48,14 @@ class DynamicGameControlTests(unittest.TestCase):
             detect_radar_notification_targets(frame),
             [(676, 230), (696, 356)],
         )
+
+    def test_radar_marker_requires_a_notification_dot(self):
+        frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+        marker_bbox = (630, 190, 90, 100)
+        cv2.circle(frame, (700, 200), 8, (10, 20, 200), thickness=-1)
+
+        self.assertTrue(radar_marker_has_notification(frame, marker_bbox))
+        self.assertFalse(radar_marker_has_notification(frame, (480, 170, 90, 100)))
 
     def test_detects_enabled_radar_card_and_world_buttons(self):
         frame = np.full((720, 1280, 3), (45, 55, 65), dtype=np.uint8)

@@ -140,6 +140,27 @@ class AdbClientTests(unittest.TestCase):
             ],
         )
 
+    def test_force_stop_package_uses_selected_emulator(self):
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append((command, kwargs))
+            return FakeResult()
+
+        self.make_client(runner).force_stop_package("com.igg.android.doomsdaylastsurvivors")
+        self.assertEqual(
+            calls[0][0],
+            [
+                "adb.exe",
+                "-s",
+                "emulator-5556",
+                "shell",
+                "am",
+                "force-stop",
+                "com.igg.android.doomsdaylastsurvivors",
+            ],
+        )
+
     def test_list_devices_ignores_configured_serial(self):
         calls = []
 

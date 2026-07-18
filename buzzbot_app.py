@@ -47,6 +47,7 @@ from buzzbot.matching import (
     detect_radar_notification_targets,
     detect_radar_world_action_target,
     healing_auto_fill_is_checked,
+    radar_marker_has_notification,
     zombie_camp_checkbox_is_checked,
 )
 from buzzbot.routines import (
@@ -66,8 +67,10 @@ from buzzbot.routines import (
     pick_due_task_index,
     prize_hunt_branch_allows_image,
     radar_marker_was_confirmed,
+    reset_radar_card_runtime_steps,
     reconcile_march_deadlines,
     resource_search_retry_due,
+    setting_requirement_matches,
     routine_home_recovery_due,
     routine_idle_screen_recovery_due,
     routine_requires_settlement,
@@ -84,7 +87,7 @@ from buzzbot.state import BotState, compute_runtime_seconds
 from buzzbot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.2.2"
+APP_VERSION = "3.2.3"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -96,6 +99,7 @@ GAME_PACKAGE = "com.igg.android.doomsdaylastsurvivors"
 # is already visible. Keep the login task alive long enough to close it.
 GAME_LOGIN_MINIMUM_SECONDS = 50.0
 GAME_LOGIN_STABLE_SECONDS = 12.0
+GAME_LOGIN_RESTART_SECONDS = 75.0
 WORLD_SEARCH_TASK_IDS = {"food", "wood", "metal", "oil", "zombie_hunt", "collective_mind"}
 MARCH_OBSERVER_GRACE_SECONDS = 15.0
 
@@ -618,6 +622,7 @@ class AutoClicker:
         self.routine_completed_steps = set()
         self.routine_idle_confirmation_count = 0
         self.routine_home_recovery_attempted = False
+        self.routine_login_restart_attempted = False
         self.routine_idle_guard_visible = False
         self.routine_idle_outside_since = 0.0
         self.routine_idle_recovery_attempted = False
@@ -1195,38 +1200,89 @@ class AutoClicker:
         logger.warning("Переход с карты мира в убежище не подтверждён")
         return False
 
+    def _world_search_panel_visible(self):
+        task = self.get_routine_task(self.current_routine_task_id)
+        if task is None:
+            return False
+        panel_steps = {"resource_icon", "search_button", "zombie_icon", "leader_icon"}
+        for image in self.get_routine_templates(task, active_only=True):
+            if str(image.get("runtime_step") or "") not in panel_steps:
+                continue
+            try:
+                location, bbox, _confidence = self._locate_image(image)
+                if location is None or bbox is None:
+                    continue
+                is_valid, _reason = self._validate_detected_match(image, bbox)
+                if is_valid:
+                    return True
+            except Exception:
+                logger.exception(
+                    "World search panel confirmation failed for %s",
+                    image.get("description"),
+                )
+        return False
+
     def _prepare_world_search_screen(self):
         """Open the world-search panel without relying on a base-layout template."""
         if not self._is_main_screen_visible() and not self._return_to_main_screen(max_back_steps=4):
             return False
 
         display = self.get_display_profile() if self.uses_adb else make_display_profile(1280, 720)
-        try:
-            if self._is_settlement_screen_visible():
-                region_x = int(round(65 * display.scale_x))
-                region_y = int(round(655 * display.scale_y))
-                if self.uses_adb:
-                    self.adb_client.tap(region_x, region_y)
-                else:
-                    pyautogui.click(region_x, region_y)
-                self._invalidate_capture()
-                self._interruptible_sleep(1.5)
+        region_x = int(round(65 * display.scale_x))
+        region_y = int(round(655 * display.scale_y))
+        search_x = int(round(43 * display.scale_x))
+        search_y = int(round(447 * display.scale_y))
 
-            search_x = int(round(43 * display.scale_x))
-            search_y = int(round(447 * display.scale_y))
-            if self.uses_adb:
-                self.adb_client.tap(search_x, search_y)
-            else:
-                pyautogui.click(search_x, search_y)
+        for attempt in range(1, 4):
+            if self._world_search_panel_visible():
+                self.set_status_message("Карта мира: поиск открыт", force=True)
+                return True
+            try:
+                if self._is_settlement_screen_visible():
+                    if self.uses_adb:
+                        self.adb_client.tap(region_x, region_y)
+                    else:
+                        pyautogui.click(region_x, region_y)
+                    self._invalidate_capture()
+                    self._interruptible_sleep(1.5)
+
+                if self.uses_adb:
+                    self.adb_client.tap(search_x, search_y)
+                else:
+                    pyautogui.click(search_x, search_y)
+                self._invalidate_capture()
+                for _check in range(4):
+                    self._interruptible_sleep(0.5)
+                    if self._world_search_panel_visible():
+                        self.set_status_message("Карта мира: поиск открыт", force=True)
+                        logger.info(
+                            "World search confirmed for task %s on attempt %s",
+                            self.current_routine_task_id,
+                            attempt,
+                        )
+                        return True
+            except Exception:
+                logger.exception("Не удалось открыть поиск на карте мира")
+
+            logger.warning(
+                "World search was not confirmed for task %s on attempt %s/3",
+                self.current_routine_task_id,
+                attempt,
+            )
+            try:
+                if self.uses_adb:
+                    self.adb_client.keyevent(4)
+                else:
+                    pyautogui.press("escape")
+            except Exception:
+                logger.exception("World search recovery back action failed")
             self._invalidate_capture()
             self._interruptible_sleep(1.0)
-        except Exception:
-            logger.exception("Не удалось открыть поиск на карте мира")
-            return False
+            if not self._is_main_screen_visible():
+                self._return_to_main_screen(max_back_steps=3)
 
-        self.set_status_message("Карта мира: поиск открыт", force=True)
-        logger.info("World search prepared directly for task %s", self.current_routine_task_id)
-        return True
+        self.set_status_message("Не удалось подтвердить панель поиска", force=True)
+        return False
 
     def _return_to_main_screen(self, max_back_steps=5, require_settlement=False):
         for step in range(max(1, int(max_back_steps)) + 1):
@@ -1445,6 +1501,36 @@ class AutoClicker:
         except AdbError as exc:
             logger.error("Не удалось запустить игру через ADB: %s", exc)
             self.set_status_message(f"Не удалось запустить игру: {exc}", force=True)
+            return False
+
+    def _restart_game_for_login(self):
+        if not self.uses_adb or self.routine_login_restart_attempted:
+            return False
+        self.routine_login_restart_attempted = True
+        try:
+            if self.adb_client is None:
+                self._refresh_adb_client()
+            self.set_status_message(
+                "Вход в игру: загрузка зависла, перезапускаю Doomsday",
+                force=True,
+            )
+            self.adb_client.force_stop_package(GAME_PACKAGE)
+            self._interruptible_sleep(2.0)
+            self.adb_client.launch_package(GAME_PACKAGE)
+            self._adb_frame_cache = None
+            self._adb_frame_timestamp = 0.0
+            self.blocked_coords.clear()
+            self.routine_completed_steps = set()
+            self.routine_idle_confirmation_count = 0
+            self._interruptible_sleep(8.0)
+            restarted_at = time.time()
+            self.routine_task_started_at = restarted_at
+            self.routine_last_action_time = restarted_at
+            logger.info("Game login package restart completed for %s", self.adb_serial)
+            return True
+        except AdbError as exc:
+            logger.error("Не удалось перезапустить игру через ADB: %s", exc)
+            self.set_status_message(f"Не удалось перезапустить игру: {exc}", force=True)
             return False
 
     def _test_search_worker(self):
@@ -2467,6 +2553,7 @@ class AutoClicker:
         self.routine_completed_steps = set()
         self.routine_idle_confirmation_count = 0
         self.routine_home_recovery_attempted = False
+        self.routine_login_restart_attempted = False
         self.routine_idle_guard_visible = False
         self.routine_idle_outside_since = 0.0
         self.routine_idle_recovery_attempted = False
@@ -2504,6 +2591,7 @@ class AutoClicker:
         self.routine_idle_guard_visible = False
         if not task.get("complete_when_idle"):
             return False
+        frame = None
         if self.uses_adb:
             frame = self._capture_adb_frame(force=True)
             black_ratio = float(np.mean(np.max(frame, axis=2) < 8))
@@ -2533,8 +2621,17 @@ class AutoClicker:
         for image in self.search_images:
             if not image.get("prevents_idle_completion") or not self._is_active(image):
                 continue
-            blocker_location, _blocker_bbox, _blocker_confidence = self._locate_image(image)
+            blocker_location, blocker_bbox, _blocker_confidence = self._locate_image(image)
             if blocker_location is not None:
+                if task.get("id") == "radar":
+                    if frame is None:
+                        frame, _frame_origin = self._capture_screen_bgr(force=True)
+                    if not radar_marker_has_notification(frame, blocker_bbox):
+                        logger.info(
+                            "Idle completion ignores radar-like shape without notification: %s",
+                            image.get("description"),
+                        )
+                        continue
                 if (
                     task.get("id") == "radar"
                     and radar_marker_was_confirmed(
@@ -2684,6 +2781,7 @@ class AutoClicker:
         self.routine_completed_steps = set()
         self.routine_idle_confirmation_count = 0
         self.routine_home_recovery_attempted = False
+        self.routine_login_restart_attempted = False
         self.routine_idle_guard_visible = False
         self.routine_idle_outside_since = 0.0
         self.routine_idle_recovery_attempted = False
@@ -3400,12 +3498,11 @@ class AutoClicker:
                         ):
                             continue
 
-                        required_setting_key = str(img_config.get("required_setting_key") or "")
-                        if required_setting_key:
-                            required_value = img_config.get("required_setting_value")
-                            current_value = current_routine_task.get("settings", {}).get(required_setting_key)
-                            if str(current_value) != str(required_value):
-                                continue
+                        if not setting_requirement_matches(
+                            img_config,
+                            current_routine_task.get("settings", {}),
+                        ):
+                            continue
                         if (
                             current_routine_task.get("id") == "prize_hunt"
                             and not prize_hunt_branch_allows_image(
@@ -3482,6 +3579,18 @@ class AutoClicker:
                             location, bbox, _confidence = self._locate_image(img_config)
 
                             if location and bbox:
+                                if (
+                                    current_routine_task.get("id") == "radar"
+                                    and img_config.get("runtime_step") == "radar_marker"
+                                ):
+                                    radar_frame, _radar_origin = self._capture_screen_bgr()
+                                    if not radar_marker_has_notification(radar_frame, bbox):
+                                        logger.info(
+                                            "Radar marker rejected without notification dot: %s @ %s",
+                                            img_config.get("description"),
+                                            bbox,
+                                        )
+                                        continue
                                 if self.anti_loop_enabled:
                                     coord_key = (
                                         img_config.get("uid") or img_config.get("path"),
@@ -3552,6 +3661,13 @@ class AutoClicker:
                                         )
                                     runtime_step = str(img_config.get("runtime_step") or "")
                                     if runtime_step:
+                                        if (
+                                            current_routine_task.get("id") == "radar"
+                                            and runtime_step == "radar_marker"
+                                        ):
+                                            reset_radar_card_runtime_steps(
+                                                self.routine_completed_steps
+                                            )
                                         self.routine_completed_steps.update(
                                             completed_runtime_steps_for_image(img_config)
                                         )
@@ -3681,6 +3797,13 @@ class AutoClicker:
                                 self._finish_current_routine(time.time())
                             continue
                         self.routine_idle_confirmation_count = 0
+                        if (
+                            self.uses_adb
+                            and not self.routine_login_restart_attempted
+                            and idle >= GAME_LOGIN_RESTART_SECONDS
+                            and self._restart_game_for_login()
+                        ):
+                            continue
                     timeout = float(current_routine_task.get("timeout_seconds", 8.0))
                     if not action_occurred and no_available_squad_wait_exceeded(
                         current_routine_task,
@@ -3922,6 +4045,23 @@ class AutoClicker:
                 force=True,
             )
             self._interruptible_sleep(img_config.get("delay", 0.5))
+            return True
+
+        if action == "radar_return_shelter":
+            if self.uses_adb:
+                self.adb_client.tap(int(round(target_x)), int(round(target_y)))
+            else:
+                pyautogui.click(target_x, target_y)
+            self._invalidate_capture()
+            self._confirm_pending_radar_marker()
+            reset_radar_card_runtime_steps(self.routine_completed_steps)
+            self.routine_last_action_time = time.time()
+            img_config["last_used"] = self.routine_last_action_time
+            self.set_status_message(
+                "Радар: задание обработано, возвращаюсь к следующей карточке",
+                force=True,
+            )
+            self._interruptible_sleep(img_config.get("delay", 0.8))
             return True
 
         if action == "select_training_queue":

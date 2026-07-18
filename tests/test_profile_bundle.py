@@ -4,8 +4,31 @@ import unittest
 import uuid
 import zipfile
 
+import cv2
+import numpy as np
+
 
 class ProfileBundleTests(unittest.TestCase):
+    def test_gathering_boost_templates_exclude_inventory_counts(self):
+        profile_path = Path(__file__).resolve().parents[1] / "profiles" / "BuZzbot_PC_1280x720.zip"
+        namespace = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
+        boost_uids = {
+            str(uuid.uuid5(namespace, "gathering_boost:boost_8h")),
+            str(uuid.uuid5(namespace, "gathering_boost:boost_24h")),
+        }
+
+        with zipfile.ZipFile(profile_path) as archive:
+            manifest = json.loads(archive.read("profile.json"))
+            images = {image["uid"]: image for image in manifest["images"]}
+            for uid in boost_uids:
+                encoded = np.frombuffer(archive.read(images[uid]["path"]), dtype=np.uint8)
+                template = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+                self.assertIsNotNone(template)
+                self.assertLessEqual(template.shape[0], 82)
+
+            boost_24h_uid = str(uuid.uuid5(namespace, "gathering_boost:boost_24h"))
+            self.assertTrue(images[boost_24h_uid]["allow_higher_setting_fallback"])
+
     def test_portable_profile_contains_startup_and_radar_recovery(self):
         profile_path = Path(__file__).resolve().parents[1] / "profiles" / "BuZzbot_PC_1280x720.zip"
         namespace = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
@@ -56,7 +79,7 @@ class ProfileBundleTests(unittest.TestCase):
         with zipfile.ZipFile(profile_path) as archive:
             manifest = json.loads(archive.read("profile.json"))
 
-        self.assertEqual(manifest["app_version"], "3.2.2")
+        self.assertEqual(manifest["app_version"], "3.2.3")
         tasks = {task["id"]: task for task in manifest["routine_tasks"]}
         images = {image["uid"]: image for image in manifest["images"]}
         donation = tasks["alliance_donations"]
