@@ -9,19 +9,19 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-APP_NAME = "DoomsdayBotPortable"
-SPEC_PATH = PROJECT_ROOT / "DoomsdayBotPortable.generated.spec"
+APP_NAME = "BuZzbot"
+BUNDLE_NAME = "BuZzbotPortable"
+SPEC_PATH = PROJECT_ROOT / "BuZzbotPortable.generated.spec"
 WORK_ROOT = PROJECT_ROOT / "build" / "_pyinstaller"
 STAGE_ROOT = PROJECT_ROOT / "build" / "_portable_dist"
-STAGE_DIR = STAGE_ROOT / APP_NAME
-LEGACY_WORK_DIR = PROJECT_ROOT / "build" / "DoomsdayBotPortable.generated"
+STAGE_DIR = STAGE_ROOT / BUNDLE_NAME
+LEGACY_WORK_DIR = PROJECT_ROOT / "build" / "BuZzbotPortable.generated"
 DIST_ROOT = PROJECT_ROOT / "dist"
-DIST_DIR = DIST_ROOT / APP_NAME
-ARCHIVE_PATH = DIST_ROOT / f"{APP_NAME}.zip"
+DIST_DIR = DIST_ROOT / BUNDLE_NAME
+ARCHIVE_PATH = DIST_ROOT / f"{BUNDLE_NAME}.zip"
 CONFIG_PATH = PROJECT_ROOT / "config.json"
 EXAMPLE_CONFIG_PATH = PROJECT_ROOT / "config.example.json"
 IMG_DIR = PROJECT_ROOT / "img"
-MANUAL_PATH = PROJECT_ROOT / "DoomsdayBot_Инструкция.pdf"
 
 
 def build_spec_text() -> str:
@@ -39,7 +39,7 @@ if config_file.exists():
 
 
 a = Analysis(
-    ['doomsday_bot_final.py'],
+    ['buzzbot_app.py'],
     pathex=[str(project_root)],
     binaries=[],
     datas=datas,
@@ -58,7 +58,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='DoomsdayBotPortable',
+    name='BuZzbot',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -74,7 +74,7 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='DoomsdayBotPortable',
+    name='BuZzbotPortable',
 )
 """
 
@@ -120,15 +120,6 @@ def finalize_portable_layout(preserve_runtime=True):
     if preserve_runtime:
         preserve_runtime_data()
     validate_portable_layout()
-    if MANUAL_PATH.exists():
-        shutil.copy2(MANUAL_PATH, STAGE_DIR / MANUAL_PATH.name)
-    (STAGE_DIR / "START_HERE.txt").write_text(
-        "Запустите DoomsdayBotPortable.exe из этой папки.\n"
-        "Не отделяйте папку _internal от EXE-файла.\n"
-        "Обучение переносится через Настроить задачи -> Экспорт обучения.\n"
-        "Не запускайте файлы из папки build.\n",
-        encoding="utf-8",
-    )
     if DIST_DIR.exists():
         shutil.rmtree(DIST_DIR)
     DIST_ROOT.mkdir(parents=True, exist_ok=True)
@@ -138,7 +129,7 @@ def finalize_portable_layout(preserve_runtime=True):
         str(ARCHIVE_PATH.with_suffix("")),
         "zip",
         root_dir=DIST_ROOT,
-        base_dir=APP_NAME,
+        base_dir=BUNDLE_NAME,
     )
 
 

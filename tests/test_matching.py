@@ -5,7 +5,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from doomsdaybot.matching import TemplateCache, imread_unicode
+from buzzbot.matching import TemplateCache, imread_unicode
 
 
 class UnicodeImageReadTests(unittest.TestCase):

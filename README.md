@@ -1,4 +1,4 @@
-# Doomsday Bot PC
+# BuZzbot
 
 Приватный Windows-бот для Doomsday: Last Survivors в LDPlayer 9. Программа автоматически проверяет ADB и живое разрешение LDPlayer, подгоняет шаблоны и координаты, а затем выполняет выбранные рутинные задачи.
 
@@ -6,8 +6,8 @@
 
 1. Откройте раздел **Releases** репозитория.
 2. Выберите релиз **Последняя portable-сборка**.
-3. Скачайте `DoomsdayBotPortable.zip`.
-4. Распакуйте ZIP полностью и запустите `DoomsdayBotPortable.exe`.
+3. Скачайте `BuZzbotPortable.zip`.
+4. Распакуйте ZIP полностью и запустите `BuZzbot.exe`.
 
 Не запускайте EXE прямо из архива и не отделяйте его от папки `_internal`.
 

@@ -5,7 +5,7 @@ from unittest.mock import patch
 import cv2
 import numpy as np
 
-from doomsdaybot.adb import AdbClient, AdbError
+from buzzbot.adb import AdbClient, AdbError
 
 
 class FakeResult:
@@ -156,12 +156,12 @@ class AdbClientTests(unittest.TestCase):
         self.assertIn("Verify", xml)
         self.assertEqual(
             calls[0][0][-3:],
-            ["uiautomator", "dump", "/sdcard/doomsdaybot_ui.xml"],
+            ["uiautomator", "dump", "/sdcard/buzzbot_ui.xml"],
         )
-        self.assertEqual(calls[1][0][-2:], ["cat", "/sdcard/doomsdaybot_ui.xml"])
-        self.assertEqual(calls[2][0][-3:], ["rm", "-f", "/sdcard/doomsdaybot_ui.xml"])
+        self.assertEqual(calls[1][0][-2:], ["cat", "/sdcard/buzzbot_ui.xml"])
+        self.assertEqual(calls[2][0][-3:], ["rm", "-f", "/sdcard/buzzbot_ui.xml"])
 
-    @patch("doomsdaybot.adb.os.name", "nt")
+    @patch("buzzbot.adb.os.name", "nt")
     def test_windows_commands_do_not_open_a_console(self):
         calls = []
 

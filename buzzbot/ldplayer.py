@@ -136,7 +136,7 @@ def enable_adb_debug(ldconsole_path, index):
     if int(data.get("basicSettings.adbDebug", 0)) == 1:
         return False
 
-    backup = path.with_suffix(path.suffix + ".doomsdaybot.bak")
+    backup = path.with_suffix(path.suffix + ".buzzbot.bak")
     if not backup.exists():
         shutil.copy2(path, backup)
     data["basicSettings.adbDebug"] = 1

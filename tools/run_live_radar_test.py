@@ -9,8 +9,8 @@ import time
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from doomsday_bot_final import AutoClicker
-from doomsdaybot.routines import effective_task_group
+from buzzbot_app import AutoClicker
+from buzzbot.routines import effective_task_group
 
 
 def run(serial: str, timeout_seconds: float, task_id: str = "radar", settings=None) -> int:

@@ -2,7 +2,7 @@ import unittest
 from datetime import datetime, timezone
 import uuid
 
-from doomsdaybot.routines import (
+from buzzbot.routines import (
     PROFILE_NAMESPACE,
     completed_runtime_steps_for_image,
     default_routine_tasks,
@@ -426,7 +426,7 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertEqual(tasks[0]["timeout_seconds"], 30.0)
 
     def test_resource_result_level_uses_strongest_match_not_mapping_order(self):
-        from doomsdaybot.routines import select_best_resource_result_level
+        from buzzbot.routines import select_best_resource_result_level
 
         self.assertEqual(
             select_best_resource_result_level([("6", 0.88), ("7", 0.96)]),

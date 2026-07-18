@@ -18,10 +18,10 @@ import cv2
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from doomsday_bot_final import AutoClicker, CONFIG_FILE, GAME_PACKAGE, logger
-from doomsdaybot.adb import AdbClient
-from doomsdaybot.ldplayer import find_ldconsole, list_instances
-from doomsdaybot.routines import effective_task_group
+from buzzbot_app import AutoClicker, CONFIG_FILE, GAME_PACKAGE, logger
+from buzzbot.adb import AdbClient
+from buzzbot.ldplayer import find_ldconsole, list_instances
+from buzzbot.routines import effective_task_group
 
 
 DEFAULT_INDEXES = (1, 2, 3, 4, 5, 7)

@@ -11,7 +11,7 @@ def configure_logging(log_path):
     log_path = Path(log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    logger = logging.getLogger("DoomsdayBot")
+    logger = logging.getLogger("BuZzbot")
     if logger.handlers:
         return logger
 

@@ -164,7 +164,7 @@ class AdbClient:
 
     def ui_xml(self):
         """Return the current Android accessibility tree without leaving files behind."""
-        remote_path = "/sdcard/doomsdaybot_ui.xml"
+        remote_path = "/sdcard/buzzbot_ui.xml"
         self._run(["shell", "uiautomator", "dump", remote_path], timeout=12)
         try:
             return self._run(["shell", "cat", remote_path], timeout=5)

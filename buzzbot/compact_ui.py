@@ -4,7 +4,7 @@ import threading
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
-from doomsdaybot.routines import effective_task_group, task_setting_specs
+from buzzbot.routines import effective_task_group, task_setting_specs
 
 
 CATEGORY_TITLES = {
@@ -320,7 +320,7 @@ def build_compact_ui(root, bot):
     for widget in root.winfo_children():
         widget.destroy()
 
-    root.title("Doomsday Bot")
+    root.title("BuZzbot")
     root.geometry("760x820")
     root.minsize(680, 650)
     root.configure(bg="#f3f1eb")
@@ -344,7 +344,7 @@ def build_compact_ui(root, bot):
 
     header = ttk.Frame(outer)
     header.pack(fill=tk.X)
-    ttk.Label(header, text="DOOMSDAY BOT", style="CompactTitle.TLabel").pack(side=tk.LEFT)
+    ttk.Label(header, text="BuZzbot", style="CompactTitle.TLabel").pack(side=tk.LEFT)
     ttk.Label(header, text=f"v{getattr(bot, 'app_version', '3.0.0')} · LDPlayer").pack(side=tk.RIGHT)
     ttk.Label(
         outer,

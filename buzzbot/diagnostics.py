@@ -71,7 +71,7 @@ def create_diagnostic_report(
     output_dir = Path(output_dir) if output_dir else app_dir / "reports"
     output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_path = output_dir / f"DoomsdayBot_report_{stamp}.zip"
+    report_path = output_dir / f"BuZzbot_report_{stamp}.zip"
 
     config = {}
     if config_path.is_file():
@@ -94,7 +94,7 @@ def create_diagnostic_report(
     ldplayer_list = _run_capture([ldconsole_path, "list2"]) if ldconsole_path else "ldconsole.exe не найден"
     state = redact_config(runtime_state or {})
     lines = [
-        "DOOMSDAY BOT - ДИАГНОСТИЧЕСКИЙ ОТЧЁТ",
+        "BuZzbot - ДИАГНОСТИЧЕСКИЙ ОТЧЁТ",
         f"Создан: {datetime.now().isoformat(timespec='seconds')}",
         f"Версия: {app_version}",
         f"Windows: {platform.platform()}",

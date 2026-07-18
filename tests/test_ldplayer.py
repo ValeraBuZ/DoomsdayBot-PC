@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from doomsdaybot.ldplayer import (
+from buzzbot.ldplayer import (
     adb_debug_enabled,
     enable_adb_debug,
     index_from_serial,
@@ -39,10 +39,10 @@ class LDPlayerTests(unittest.TestCase):
             self.assertFalse(adb_debug_enabled(ldconsole, 3))
             self.assertTrue(enable_adb_debug(ldconsole, 3))
             self.assertTrue(adb_debug_enabled(ldconsole, 3))
-            self.assertTrue(config_path.with_suffix(".config.doomsdaybot.bak").is_file())
+            self.assertTrue(config_path.with_suffix(".config.buzzbot.bak").is_file())
             self.assertFalse(enable_adb_debug(ldconsole, 3))
 
-    @patch("doomsdaybot.ldplayer._run_ldconsole")
+    @patch("buzzbot.ldplayer._run_ldconsole")
     def test_launch_instance_uses_hidden_ldconsole_command(self, run_ldconsole):
         launch_instance(Path("ldconsole.exe"), 5)
         run_ldconsole.assert_called_once_with(

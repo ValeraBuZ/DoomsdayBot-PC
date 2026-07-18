@@ -15,7 +15,7 @@ import cv2
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from doomsdaybot.routines import (
+from buzzbot.routines import (
     RESOURCE_RESULT_SEARCH_REGION,
     default_routine_tasks,
     upgrade_radar_runtime_metadata,
@@ -27,7 +27,7 @@ from doomsdaybot.routines import (
 
 
 TRAINING_DIR = PROJECT_ROOT / "build" / "training"
-DEFAULT_PROFILE = TRAINING_DIR / "Doomsday_Phoenix675_1280x720.zip"
+DEFAULT_PROFILE = TRAINING_DIR / "BuZzbot_Phoenix675_1280x720.zip"
 PROFILE_NAMESPACE = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
 SYSTEM_GROUP = "Системные окна"
 ACCOUNT_SWITCH_GROUP = "Переключение аккаунта"
@@ -1117,7 +1117,7 @@ def build_profile(destination):
     manifest = {
         "format": "doomsday-training-profile",
         "format_version": 1,
-        "app_version": "3.1.14",
+        "app_version": "3.1.15",
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "source_screen": {"width": 1280, "height": 720},
         "routine_tasks": tasks,

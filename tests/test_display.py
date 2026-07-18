@@ -1,6 +1,6 @@
 import unittest
 
-from doomsdaybot.display import make_display_profile, matching_scales
+from buzzbot.display import make_display_profile, matching_scales
 
 
 class PlayerDisplayProfileTests(unittest.TestCase):

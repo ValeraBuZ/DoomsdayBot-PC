@@ -1,4 +1,4 @@
-name: Portable Windows build
+name: BuZzbot Portable Windows build
 
 on:
   push:
@@ -34,19 +34,19 @@ jobs:
         run: |
           Copy-Item config.example.json config.json
           python tools/install_training_profile.py `
-            --profile profiles/Doomsday_PC_1280x720.zip `
+            --profile profiles/BuZzbot_PC_1280x720.zip `
             --install-root .
           python build_portable.py --clean-runtime
-          Remove-Item dist/DoomsdayBotPortable.zip -Force
+          Remove-Item dist/BuZzbotPortable.zip -Force
           Compress-Archive `
-            -Path dist/DoomsdayBotPortable `
-            -DestinationPath dist/DoomsdayBotPortable.zip `
+            -Path dist/BuZzbotPortable `
+            -DestinationPath dist/BuZzbotPortable.zip `
             -CompressionLevel Optimal
 
       - name: Проверить запуск EXE
         shell: pwsh
         run: |
-          $process = Start-Process dist/DoomsdayBotPortable/DoomsdayBotPortable.exe -PassThru
+          $process = Start-Process dist/BuZzbotPortable/BuZzbot.exe -PassThru
           try {
             Start-Sleep -Seconds 10
             $process.Refresh()
@@ -65,8 +65,8 @@ jobs:
       - name: Сохранить ZIP сборки
         uses: actions/upload-artifact@v4
         with:
-          name: DoomsdayBotPortable
-          path: dist/DoomsdayBotPortable.zip
+          name: BuZzbotPortable
+          path: dist/BuZzbotPortable.zip
           if-no-files-found: error
 
       - name: Обновить релиз latest
@@ -81,8 +81,14 @@ jobs:
           git push origin latest --force
           gh release view latest *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload latest dist/DoomsdayBotPortable.zip --clobber
-            gh release edit latest --title "Последняя portable-сборка" --notes "Автоматическая сборка из ветки main."
+            $assets = gh release view latest --json assets --jq '.assets[].name'
+            foreach ($asset in $assets) {
+              if ($asset -ne 'BuZzbotPortable.zip') {
+                gh release delete-asset latest $asset --yes
+              }
+            }
+            gh release upload latest dist/BuZzbotPortable.zip --clobber
+            gh release edit latest --title "BuZzbot — последняя portable-сборка" --notes "Автоматическая сборка BuZzbot из ветки main."
           } else {
-            gh release create latest dist/DoomsdayBotPortable.zip --title "Последняя portable-сборка" --notes "Автоматическая сборка из ветки main."
+            gh release create latest dist/BuZzbotPortable.zip --title "BuZzbot — последняя portable-сборка" --notes "Автоматическая сборка BuZzbot из ветки main."
           }

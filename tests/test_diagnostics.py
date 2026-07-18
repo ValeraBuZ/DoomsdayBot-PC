@@ -4,7 +4,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from doomsdaybot.diagnostics import create_diagnostic_report, redact_config
+from buzzbot.diagnostics import create_diagnostic_report, redact_config
 
 
 class DiagnosticReportTests(unittest.TestCase):
@@ -30,7 +30,7 @@ class DiagnosticReportTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (root / "bot.log").write_text(
-                "2026 - DoomsdayBot - ERROR - user@example.com failed\n",
+                "2026 - BuZzbot - ERROR - user@example.com failed\n",
                 encoding="utf-8",
             )
             external_log = root / "runtime.log"
@@ -43,6 +43,7 @@ class DiagnosticReportTests(unittest.TestCase):
                 log_paths=[external_log],
                 screenshot_png=b"fake-png",
             )
+            self.assertTrue(report.name.startswith("BuZzbot_report_"))
             with zipfile.ZipFile(report) as archive:
                 names = set(archive.namelist())
                 self.assertIn("report.txt", names)

@@ -1,6 +1,6 @@
 import unittest
 
-from doomsdaybot.accounts import (
+from buzzbot.accounts import (
     apply_tasks,
     default_account_profiles,
     next_enabled_account,
@@ -8,7 +8,7 @@ from doomsdaybot.accounts import (
     requires_google_reauthentication,
     snapshot_tasks,
 )
-from doomsdaybot.routines import default_routine_tasks
+from buzzbot.routines import default_routine_tasks
 
 
 class AccountProfileTests(unittest.TestCase):

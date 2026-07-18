@@ -11,11 +11,12 @@ img/
 backups/
 reports/
 test_runs/
+tmp/
 build/
 dist/
 android_samsung_mvp/
 *.generated.spec
-DoomsdayBotPortable.spec
+BuZzbotPortable.spec
 
 *.tmp
 *.bak

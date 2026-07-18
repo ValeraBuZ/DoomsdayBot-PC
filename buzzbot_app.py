@@ -17,7 +17,7 @@ import subprocess
 import tempfile
 import zipfile
 from datetime import datetime
-from doomsdaybot.accounts import (
+from buzzbot.accounts import (
     apply_tasks as apply_account_tasks,
     default_account_profiles,
     find_account,
@@ -26,12 +26,12 @@ from doomsdaybot.accounts import (
     normalize_account_profiles,
     snapshot_tasks as snapshot_account_tasks,
 )
-from doomsdaybot.adb import AdbClient, AdbError, find_adb_executable
-from doomsdaybot.compact_ui import build_compact_ui
-from doomsdaybot.diagnostics import create_diagnostic_report
-from doomsdaybot.display import make_display_profile, matching_scales
-from doomsdaybot.grouping import build_group_iteration_plan, parse_click_sequence, parse_time_to_minutes, validate_hour_min
-from doomsdaybot.ldplayer import (
+from buzzbot.adb import AdbClient, AdbError, find_adb_executable
+from buzzbot.compact_ui import build_compact_ui
+from buzzbot.diagnostics import create_diagnostic_report
+from buzzbot.display import make_display_profile, matching_scales
+from buzzbot.grouping import build_group_iteration_plan, parse_click_sequence, parse_time_to_minutes, validate_hour_min
+from buzzbot.ldplayer import (
     adb_debug_enabled,
     enable_adb_debug,
     find_ldconsole,
@@ -40,9 +40,9 @@ from doomsdaybot.ldplayer import (
     list_instances,
     reboot_instance,
 )
-from doomsdaybot.logging_utils import configure_logging, install_exception_logging
-from doomsdaybot.matching import TemplateCache
-from doomsdaybot.routines import (
+from buzzbot.logging_utils import configure_logging, install_exception_logging
+from buzzbot.matching import TemplateCache
+from buzzbot.routines import (
     completed_runtime_steps_for_image,
     default_routine_tasks,
     effective_active_marches,
@@ -70,11 +70,11 @@ from doomsdaybot.routines import (
     upgrade_resource_runtime_metadata,
     upgrade_strict_runtime_metadata,
 )
-from doomsdaybot.state import BotState, compute_runtime_seconds
-from doomsdaybot.storage import move_file_to_trash, save_json_with_backup
+from buzzbot.state import BotState, compute_runtime_seconds
+from buzzbot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.1.14"
+APP_VERSION = "3.1.15"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -161,7 +161,7 @@ def get_gpu_load_percent():
 # Словарь переводов (русский + английский)
 LANGUAGES = {
     'ru': {
-        'window_title': "DOOMSDAY BOT",
+        'window_title': "BuZzbot",
         'language': "Язык:",
         'status': "Статус",
         'state_stopped': "Остановлен",
@@ -251,7 +251,7 @@ LANGUAGES = {
         'profile_import': "Импорт обучения",
         'profile_saved': "Профиль сохранён: {path}\nШаблонов: {count}",
         'profile_loaded': "Профиль загружен. Добавлено шаблонов: {added}, уже было: {skipped}.\nИсходный экран: {width}×{height}",
-        'profile_format_error': "Это не профиль обучения Doomsday Bot.",
+        'profile_format_error': "Это не профиль обучения BuZzbot.",
         'ready': "Готов",
         'groups': "Группы",
         'no_groups': "Нет групп. Создайте группу в редакторе области.",
@@ -364,7 +364,7 @@ LANGUAGES = {
         'orb_check': "Проверка ключевых точек (ORB)",
     },
     'en': {
-        'window_title': "DOOMSDAY BOT",
+        'window_title': "BuZzbot",
         'language': "Language:",
         'status': "Status",
         'state_stopped': "Stopped",
@@ -454,7 +454,7 @@ LANGUAGES = {
         'profile_import': "Import training",
         'profile_saved': "Profile saved: {path}\nTemplates: {count}",
         'profile_loaded': "Profile loaded. Added templates: {added}, already present: {skipped}.\nSource screen: {width}×{height}",
-        'profile_format_error': "This is not a Doomsday Bot training profile.",
+        'profile_format_error': "This is not a BuZzbot training profile.",
         'ready': "Ready",
         'groups': "Groups",
         'no_groups': "No groups. Create a group in area editor.",
@@ -5691,8 +5691,8 @@ class RoutineTasksDialog:
             parent=self.dialog,
             title=self.tr('profile_export'),
             defaultextension=".zip",
-            filetypes=[("Doomsday profile", "*.zip")],
-            initialfile="Doomsday_Training_Profile.zip",
+            filetypes=[("BuZzbot profile", "*.zip")],
+            initialfile="BuZzbot_Training_Profile.zip",
         )
         if not destination:
             return
@@ -5713,7 +5713,7 @@ class RoutineTasksDialog:
         source = filedialog.askopenfilename(
             parent=self.dialog,
             title=self.tr('profile_import'),
-            filetypes=[("Doomsday profile", "*.zip")],
+            filetypes=[("BuZzbot profile", "*.zip")],
         )
         if not source:
             return
@@ -7100,7 +7100,7 @@ def on_closing(root, bot):
 def main():
     root = tk.Tk()
     install_exception_logging(logger, root)
-    logger.info("Запуск Doomsday Bot %s | frozen=%s | app_dir=%s", APP_VERSION, bool(getattr(sys, 'frozen', False)), APP_DIR)
+    logger.info("Запуск BuZzbot %s | frozen=%s | app_dir=%s", APP_VERSION, bool(getattr(sys, 'frozen', False)), APP_DIR)
     root.geometry("1000x1000")
     root.update_idletasks()
     x = (root.winfo_screenwidth() - 1000) // 2

@@ -8,6 +8,15 @@ import build_portable
 
 
 class PortableBuildTests(unittest.TestCase):
+    def test_portable_brand_and_windowed_executable_are_stable(self):
+        spec = build_portable.build_spec_text()
+        self.assertEqual(build_portable.APP_NAME, "BuZzbot")
+        self.assertEqual(build_portable.BUNDLE_NAME, "BuZzbotPortable")
+        self.assertIn("['buzzbot_app.py']", spec)
+        self.assertIn("name='BuZzbot'", spec)
+        self.assertIn("name='BuZzbotPortable'", spec)
+        self.assertIn("console=False", spec)
+
     def test_stage_templates_places_png_next_to_executable(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
