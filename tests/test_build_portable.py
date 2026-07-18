@@ -16,6 +16,7 @@ class PortableBuildTests(unittest.TestCase):
         self.assertIn("name='BuZzbot'", spec)
         self.assertIn("name='BuZzbotPortable'", spec)
         self.assertIn("console=False", spec)
+        self.assertIn('"buzzbot/assets"', spec)
 
     def test_stage_templates_places_png_next_to_executable(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+from collections import deque
+from pathlib import Path
+import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
+
+from PIL import Image, ImageTk
 
 from buzzbot.routines import effective_task_group, task_setting_specs
 
@@ -19,6 +25,11 @@ CATEGORY_TITLES = {
 }
 
 CATEGORY_ORDER = ("startup", "daily", "development", "army", "training", "marches", "resources", "custom")
+
+
+def _resource_path(*parts):
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+    return base.joinpath(*parts)
 
 
 def _center(window, width, height):
@@ -309,6 +320,25 @@ class AccountsDialog:
 
 
 def build_compact_ui(root, bot):
+    colors = {
+        "shell": "#14232B",
+        "title": "#1B2A33",
+        "sidebar": "#21343E",
+        "sidebar_active": "#30434C",
+        "paper": "#E7EFF3",
+        "surface": "#F7FAFB",
+        "surface_alt": "#DFE9EE",
+        "line": "#C8D5DB",
+        "text": "#26343C",
+        "muted": "#72818A",
+        "accent": "#E46922",
+        "green": "#72A47E",
+        "green_dark": "#355844",
+        "red": "#A64C40",
+        "activity": "#304A56",
+        "activity_text": "#EAF0F2",
+    }
+
     for after_name in ("status_after_id", "active_after_id", "monitor_after_id", "compact_after_id"):
         after_id = getattr(root, after_name, None)
         if after_id:
@@ -317,75 +347,595 @@ def build_compact_ui(root, bot):
             except tk.TclError:
                 pass
             setattr(root, after_name, None)
+    try:
+        root.unbind_all("<MouseWheel>")
+    except tk.TclError:
+        pass
     for widget in root.winfo_children():
         widget.destroy()
 
-    root.title("BuZzbot")
-    root.geometry("760x820")
-    root.minsize(680, 650)
-    root.configure(bg="#f3f1eb")
+    root.title(f"BuZzbot v{getattr(bot, 'app_version', '3.0.0')}")
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    window_width = min(1320, max(1080, screen_width - 70))
+    window_height = min(840, max(680, screen_height - 110))
+    root.minsize(min(1080, window_width), min(680, window_height))
+    root.configure(bg=colors["shell"])
+    _center(root, window_width, window_height)
 
     style = ttk.Style(root)
     style.theme_use("clam")
-    style.configure("TFrame", background="#f3f1eb")
-    style.configure("TLabel", background="#f3f1eb", foreground="#20231f", font=("Segoe UI", 10))
-    style.configure("TLabelframe", background="#f3f1eb", bordercolor="#cbc7bc")
-    style.configure("TLabelframe.Label", background="#f3f1eb", foreground="#20231f", font=("Segoe UI Semibold", 10))
-    style.configure("TCheckbutton", background="#f3f1eb", font=("Segoe UI", 10))
-    style.configure("TButton", font=("Segoe UI Semibold", 9), padding=(10, 7))
-    style.configure("Primary.TButton", foreground="white", background="#1f6b52")
-    style.map("Primary.TButton", background=[("active", "#18533f"), ("disabled", "#9ca3af")])
-    style.configure("Danger.TButton", foreground="white", background="#a63d32")
-    style.map("Danger.TButton", background=[("active", "#832f27")])
-    style.configure("CompactTitle.TLabel", font=("Segoe UI Semibold", 15), foreground="#173f35")
+    style.configure("TFrame", background=colors["paper"])
+    style.configure("TLabel", background=colors["paper"], foreground=colors["text"], font=("Segoe UI", 9))
+    style.configure("TLabelframe", background=colors["paper"], bordercolor=colors["line"])
+    style.configure(
+        "TLabelframe.Label",
+        background=colors["paper"],
+        foreground=colors["text"],
+        font=("Bahnschrift SemiBold", 10),
+    )
+    style.configure("TCheckbutton", background=colors["paper"], font=("Segoe UI", 9))
+    style.configure("TButton", font=("Bahnschrift SemiBold", 9), padding=(10, 7))
+    style.configure("Primary.TButton", foreground="#102019", background=colors["green"])
+    style.map("Primary.TButton", background=[("active", "#83B28D"), ("disabled", "#B8C5C9")])
+    style.configure("Danger.TButton", foreground="white", background=colors["red"])
+    style.map("Danger.TButton", background=[("active", "#8E3F36")])
+    style.configure("CompactTitle.TLabel", font=("Bahnschrift SemiBold", 15), foreground=colors["text"])
+    style.configure("Deck.TCombobox", padding=5)
+    style.configure("Deck.Vertical.TScrollbar", troughcolor=colors["paper"], background="#AFC0C8")
 
-    outer = ttk.Frame(root, padding=14)
-    outer.pack(fill=tk.BOTH, expand=True)
+    app = tk.Frame(root, bg=colors["paper"], highlightthickness=1, highlightbackground="#314650")
+    app.pack(fill=tk.BOTH, expand=True, padx=18, pady=18)
 
-    header = ttk.Frame(outer)
-    header.pack(fill=tk.X)
-    ttk.Label(header, text="BuZzbot", style="CompactTitle.TLabel").pack(side=tk.LEFT)
-    ttk.Label(header, text=f"v{getattr(bot, 'app_version', '3.0.0')} · LDPlayer").pack(side=tk.RIGHT)
-    ttk.Label(
-        outer,
-        text="Отметьте нужные действия галочками. Выполняются только отмеченные пункты.",
-        foreground="#5f665f",
-    ).pack(fill=tk.X, pady=(4, 0))
+    titlebar = tk.Frame(app, bg=colors["title"], height=52)
+    titlebar.pack(fill=tk.X, side=tk.TOP)
+    titlebar.pack_propagate(False)
+    brand_mark = tk.Label(
+        titlebar,
+        text="B",
+        bg=colors["accent"],
+        fg="#14232B",
+        font=("Bahnschrift", 14, "bold"),
+        width=2,
+        pady=5,
+    )
+    brand_mark.pack(side=tk.LEFT, padx=(18, 10), pady=9)
+    tk.Label(
+        titlebar,
+        text="BuZzbot",
+        bg=colors["title"],
+        fg="#F4F7F8",
+        font=("Bahnschrift", 16, "bold"),
+    ).pack(side=tk.LEFT)
+    tk.Label(
+        titlebar,
+        text=f"{getattr(bot, 'app_version', '3.0.0')}  ·  COMMAND DECK",
+        bg=colors["title"],
+        fg="#83949D",
+        font=("Bahnschrift", 8),
+    ).pack(side=tk.LEFT, padx=10)
+    tk.Label(
+        titlebar,
+        text="LDPLAYER CONTROL",
+        bg=colors["title"],
+        fg="#71858F",
+        font=("Bahnschrift", 8),
+    ).pack(side=tk.RIGHT, padx=18)
 
-    account_frame = ttk.LabelFrame(outer, text="Аккаунт", padding=9)
-    account_frame.pack(fill=tk.X, pady=(12, 8))
+    body = tk.Frame(app, bg=colors["paper"])
+    body.pack(fill=tk.BOTH, expand=True)
+
+    sidebar = tk.Frame(body, bg=colors["sidebar"], width=205)
+    sidebar.pack(side=tk.LEFT, fill=tk.Y)
+    sidebar.pack_propagate(False)
+    workspace = tk.Frame(body, bg=colors["paper"])
+    workspace.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+    tk.Label(
+        sidebar,
+        text="КОМАНДНЫЙ ЦЕНТР",
+        bg=colors["sidebar"],
+        fg="#70828B",
+        font=("Bahnschrift", 7),
+    ).pack(anchor="w", padx=18, pady=(24, 10))
+
     account_var = tk.StringVar()
-    account_combo = ttk.Combobox(account_frame, textvariable=account_var, state="readonly", width=24)
-    account_combo.pack(side=tk.LEFT)
     rotation_var = tk.BooleanVar(value=bot.account_rotation_enabled)
-    ttk.Checkbutton(account_frame, text="Автосмена", variable=rotation_var).pack(side=tk.LEFT, padx=12)
+    task_vars = {}
+    task_rows = {}
+    status_events = deque(maxlen=5)
+
+    def run_root_callback(name, fallback=None):
+        callback = getattr(root, name, None)
+        if callable(callback):
+            callback()
+        elif fallback:
+            fallback()
+
+    nav_rows = []
+
+    def add_nav(code, text, command, active=False):
+        row = tk.Frame(sidebar, bg=colors["sidebar_active"] if active else colors["sidebar"], height=44)
+        row.pack(fill=tk.X, padx=12, pady=2)
+        row.pack_propagate(False)
+        if active:
+            tk.Frame(row, bg=colors["accent"], width=3).pack(side=tk.LEFT, fill=tk.Y)
+        code_label = tk.Label(
+            row,
+            text=code,
+            bg=row["bg"],
+            fg=colors["accent"] if active else "#A8B5BB",
+            font=("Bahnschrift", 7, "bold"),
+            width=4,
+        )
+        code_label.pack(side=tk.LEFT, padx=(7, 2))
+        button = tk.Button(
+            row,
+            text=text,
+            command=command,
+            bg=row["bg"],
+            fg="#F5F7F8" if active else "#AFBBC0",
+            activebackground=colors["sidebar_active"],
+            activeforeground="#FFFFFF",
+            relief=tk.FLAT,
+            bd=0,
+            anchor="w",
+            font=("Bahnschrift", 9),
+            cursor="hand2",
+        )
+        button.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        nav_rows.append(row)
+        return row
+
+    add_nav("ОБ", "Обзор", lambda: None, active=True)
+    add_nav("ЗД", "Задачи", lambda: root.after_idle(lambda: cards_canvas.yview_moveto(0.0)))
+    add_nav("ШБ", "Шаблоны", lambda: run_root_callback("open_area_manager", lambda: bot.select_area(root)))
+    add_nav("АК", "Аккаунты", lambda: AccountsDialog(root, bot, refresh_all))
+    add_nav("ЖР", "Отчёт", lambda: create_report())
+    add_nav("НТ", "Настройки", lambda: run_root_callback("open_group_schedule"))
+
+    account_panel = tk.Frame(sidebar, bg="#1C2E37", padx=12, pady=12)
+    account_panel.pack(side=tk.BOTTOM, fill=tk.X, padx=12, pady=12)
+    tk.Label(
+        account_panel,
+        text="АКТИВНЫЙ ПРОФИЛЬ",
+        bg="#1C2E37",
+        fg="#70828B",
+        font=("Bahnschrift", 7),
+    ).pack(anchor="w")
+    account_combo = ttk.Combobox(
+        account_panel,
+        textvariable=account_var,
+        state="readonly",
+        width=20,
+        style="Deck.TCombobox",
+    )
+    account_combo.pack(fill=tk.X, pady=(6, 7))
+    rotation_check = tk.Checkbutton(
+        account_panel,
+        text="Автосмена аккаунтов",
+        variable=rotation_var,
+        bg="#1C2E37",
+        fg="#B5C0C5",
+        activebackground="#1C2E37",
+        activeforeground="#FFFFFF",
+        selectcolor="#314852",
+        font=("Segoe UI", 8),
+        bd=0,
+        highlightthickness=0,
+    )
+    rotation_check.pack(anchor="w")
+    tk.Button(
+        account_panel,
+        text="Управление аккаунтами",
+        command=lambda: AccountsDialog(root, bot, refresh_all),
+        bg="#2B414B",
+        fg="#DDE5E8",
+        activebackground="#38515C",
+        activeforeground="#FFFFFF",
+        relief=tk.FLAT,
+        bd=0,
+        font=("Bahnschrift", 8),
+        cursor="hand2",
+        pady=6,
+    ).pack(fill=tk.X, pady=(8, 0))
+
+    topbar = tk.Frame(workspace, bg=colors["surface"], height=84, highlightthickness=1, highlightbackground=colors["line"])
+    topbar.pack(fill=tk.X, side=tk.TOP)
+    topbar.pack_propagate(False)
+
+    connection_title = tk.StringVar(value="Проверка связи")
+    connection_detail = tk.StringVar(value="LDPlayer · поиск устройства")
+    connection = tk.Frame(topbar, bg=colors["surface"])
+    connection.pack(side=tk.LEFT, padx=(22, 18), pady=16)
+    connection_dot = tk.Label(connection, text="●", bg=colors["surface"], fg="#A9B8BE", font=("Segoe UI", 21))
+    connection_dot.pack(side=tk.LEFT, padx=(0, 9))
+    connection_text = tk.Frame(connection, bg=colors["surface"])
+    connection_text.pack(side=tk.LEFT)
+    tk.Label(
+        connection_text,
+        textvariable=connection_title,
+        bg=colors["surface"],
+        fg=colors["text"],
+        font=("Bahnschrift", 10, "bold"),
+    ).pack(anchor="w")
+    tk.Label(
+        connection_text,
+        textvariable=connection_detail,
+        bg=colors["surface"],
+        fg=colors["muted"],
+        font=("Segoe UI", 7),
+    ).pack(anchor="w", pady=(2, 0))
+
+    selected_var = tk.StringVar(value="0 задач")
+    march_usage_var = tk.StringVar(value="0 / 5")
+    next_cycle_var = tk.StringVar(value="готово")
+
+    def add_stat(label, variable, accent=False):
+        frame = tk.Frame(topbar, bg=colors["surface"], width=135, height=82)
+        frame.pack(side=tk.LEFT, fill=tk.Y)
+        frame.pack_propagate(False)
+        tk.Label(
+            frame,
+            text=label.upper(),
+            bg=colors["surface"],
+            fg=colors["muted"],
+            font=("Bahnschrift", 7),
+        ).pack(anchor="w", pady=(18, 3))
+        tk.Label(
+            frame,
+            textvariable=variable,
+            bg=colors["surface"],
+            fg=colors["accent"] if accent else colors["text"],
+            font=("Bahnschrift", 12, "bold"),
+        ).pack(anchor="w")
+        return frame
+
+    add_stat("Выбрано", selected_var)
+    marches_stat = add_stat("Походы", march_usage_var, accent=True)
+    add_stat("Следующий цикл", next_cycle_var)
+
+    marches_var = tk.IntVar(value=bot.routine_max_marches)
+    marches_spin = ttk.Spinbox(
+        marches_stat,
+        from_=1,
+        to=5,
+        width=3,
+        textvariable=marches_var,
+        font=("Bahnschrift", 8),
+    )
+    tk.Label(
+        marches_stat,
+        text="лимит",
+        bg=colors["surface"],
+        fg=colors["muted"],
+        font=("Segoe UI", 7),
+    ).place(x=62, y=49)
+    marches_spin.place(x=91, y=44, width=36, height=22)
+
+    check_button = tk.Button(
+        topbar,
+        text="Проверить связь",
+        command=lambda: check_environment(),
+        bg=colors["surface"],
+        fg=colors["text"],
+        activebackground=colors["surface_alt"],
+        activeforeground=colors["text"],
+        relief=tk.FLAT,
+        highlightthickness=1,
+        highlightbackground="#B5C4CB",
+        font=("Bahnschrift", 8),
+        cursor="hand2",
+        padx=18,
+        pady=9,
+    )
+    check_button.pack(side=tk.RIGHT, padx=20, pady=20)
+
+    controlbar = tk.Frame(workspace, bg=colors["surface_alt"], height=112, highlightthickness=1, highlightbackground=colors["line"])
+    controlbar.pack(fill=tk.X, side=tk.BOTTOM)
+    controlbar.pack_propagate(False)
+
+    run_summary = tk.Frame(controlbar, bg=colors["surface_alt"])
+    run_summary.pack(side=tk.LEFT, fill=tk.Y, padx=24)
+    run_summary_title = tk.StringVar(value="Автоматический цикл готов")
+    run_summary_detail = tk.StringVar(value="Выберите задачи и нажмите Старт")
+    tk.Label(
+        run_summary,
+        textvariable=run_summary_title,
+        bg=colors["surface_alt"],
+        fg=colors["text"],
+        font=("Bahnschrift", 10, "bold"),
+    ).pack(anchor="w", pady=(28, 4))
+    tk.Label(
+        run_summary,
+        textvariable=run_summary_detail,
+        bg=colors["surface_alt"],
+        fg=colors["muted"],
+        font=("Segoe UI", 8),
+    ).pack(anchor="w")
+
+    action_panel = tk.Frame(controlbar, bg=colors["surface_alt"])
+    action_panel.pack(side=tk.RIGHT, padx=(8, 20), pady=27)
+
+    def action_button(parent, text, command, background, foreground, border=None):
+        return tk.Button(
+            parent,
+            text=text,
+            command=command,
+            bg=background,
+            fg=foreground,
+            activebackground=background,
+            activeforeground=foreground,
+            disabledforeground="#829099",
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1 if border else 0,
+            highlightbackground=border or background,
+            font=("Bahnschrift", 9, "bold"),
+            width=13,
+            height=2,
+            cursor="hand2",
+        )
+
+    start_button = action_button(action_panel, "СТАРТ", bot.start_routines, colors["green"], "#102019")
+    start_button.pack(side=tk.LEFT, padx=5)
+    pause_button = action_button(action_panel, "ПАУЗА", bot.toggle_pause, "#B9CED8", "#674411")
+    pause_button.pack(side=tk.LEFT, padx=5)
+    stop_button = action_button(action_panel, "СТОП", bot.stop, colors["surface_alt"], colors["red"], "#C98E87")
+    stop_button.pack(side=tk.LEFT, padx=5)
+
+    fox_path = _resource_path("buzzbot", "assets", "fox.png")
+    if fox_path.is_file():
+        fox_image = Image.open(fox_path).convert("RGBA")
+        fox_height = 66
+        fox_width = max(1, round(fox_image.width * fox_height / fox_image.height))
+        fox_image = fox_image.resize((fox_width, fox_height), Image.Resampling.LANCZOS)
+        root.buzzbot_fox_image = ImageTk.PhotoImage(fox_image)
+        tk.Label(
+            action_panel,
+            image=root.buzzbot_fox_image,
+            bg=colors["surface_alt"],
+            bd=0,
+        ).pack(side=tk.LEFT, padx=(10, 0))
+
+    content_shell = tk.Frame(workspace, bg=colors["paper"])
+    content_shell.pack(fill=tk.BOTH, expand=True)
+
+    activity = tk.Frame(content_shell, bg=colors["activity"], width=315)
+    activity.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 20), pady=20)
+    activity.pack_propagate(False)
+    main_column = tk.Frame(content_shell, bg=colors["paper"])
+    main_column.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(22, 16), pady=18)
+
+    heading = tk.Frame(main_column, bg=colors["paper"])
+    heading.pack(fill=tk.X, pady=(0, 10))
+    tk.Label(
+        heading,
+        text="Панель управления",
+        bg=colors["paper"],
+        fg=colors["text"],
+        font=("Bahnschrift", 18),
+    ).pack(side=tk.LEFT)
+    tk.Label(
+        heading,
+        text="только выбранные задачи",
+        bg=colors["paper"],
+        fg=colors["muted"],
+        font=("Segoe UI", 8),
+    ).pack(side=tk.LEFT, padx=16, pady=(8, 0))
+    tk.Button(
+        heading,
+        text="Настроить шаблоны",
+        command=lambda: run_root_callback("open_area_manager", lambda: bot.select_area(root)),
+        bg=colors["paper"],
+        fg=colors["accent"],
+        activebackground=colors["paper"],
+        activeforeground="#C65317",
+        relief=tk.FLAT,
+        bd=0,
+        font=("Bahnschrift", 8),
+        cursor="hand2",
+    ).pack(side=tk.RIGHT, pady=(8, 0))
+
+    cards_frame = tk.Frame(main_column, bg=colors["paper"])
+    cards_frame.pack(fill=tk.BOTH, expand=True)
+    cards_canvas = tk.Canvas(cards_frame, bg=colors["paper"], highlightthickness=0)
+    cards_scrollbar = ttk.Scrollbar(
+        cards_frame,
+        orient=tk.VERTICAL,
+        command=cards_canvas.yview,
+        style="Deck.Vertical.TScrollbar",
+    )
+    cards_holder = tk.Frame(cards_canvas, bg=colors["paper"])
+    cards_window = cards_canvas.create_window((0, 0), window=cards_holder, anchor="nw")
+    cards_canvas.configure(yscrollcommand=cards_scrollbar.set)
+    cards_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    cards_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+    cards_holder.columnconfigure(0, weight=1, uniform="task_cards")
+    cards_holder.columnconfigure(1, weight=1, uniform="task_cards")
+    cards_holder.bind("<Configure>", lambda _event: cards_canvas.configure(scrollregion=cards_canvas.bbox("all")))
+    cards_canvas.bind("<Configure>", lambda event: cards_canvas.itemconfigure(cards_window, width=event.width))
+
+    def scroll_tasks(event):
+        cards_canvas.yview_scroll((-1 if event.delta > 0 else 1) * 3, "units")
+        return "break"
+
+    cards_canvas.bind("<Enter>", lambda _event: cards_canvas.bind_all("<MouseWheel>", scroll_tasks))
+    cards_canvas.bind("<Leave>", lambda _event: cards_canvas.unbind_all("<MouseWheel>"))
+
+    activity_header = tk.Frame(activity, bg=colors["activity"], height=54)
+    activity_header.pack(fill=tk.X)
+    activity_header.pack_propagate(False)
+    tk.Label(
+        activity_header,
+        text="ВЫПОЛНЕНИЕ",
+        bg=colors["activity"],
+        fg=colors["activity_text"],
+        font=("Bahnschrift", 10, "bold"),
+    ).pack(side=tk.LEFT, padx=18, pady=18)
+    live_badge = tk.Label(
+        activity_header,
+        text="ГОТОВ",
+        bg=colors["green_dark"],
+        fg="#CDE2D3",
+        font=("Bahnschrift", 7),
+        padx=15,
+        pady=5,
+    )
+    live_badge.pack(side=tk.RIGHT, padx=16, pady=14)
+
+    current_task_var = tk.StringVar(value="Ожидание запуска")
+    status_var = tk.StringVar(value=bot.status_message or "Готов к запуску")
+    current = tk.Frame(activity, bg="#3A4E57", highlightthickness=1, highlightbackground="#8D6538", padx=14, pady=13)
+    current.pack(fill=tk.X, padx=16, pady=(2, 14))
+    tk.Label(
+        current,
+        text="СЕЙЧАС",
+        bg="#3A4E57",
+        fg="#F0A45B",
+        font=("Bahnschrift", 7),
+    ).pack(anchor="w")
+    tk.Label(
+        current,
+        textvariable=current_task_var,
+        bg="#3A4E57",
+        fg="#F4F7F8",
+        font=("Bahnschrift", 10, "bold"),
+        wraplength=255,
+        justify=tk.LEFT,
+    ).pack(anchor="w", pady=(7, 4))
+    tk.Label(
+        current,
+        textvariable=status_var,
+        bg="#3A4E57",
+        fg="#BCC8CD",
+        font=("Segoe UI", 8),
+        wraplength=255,
+        justify=tk.LEFT,
+    ).pack(anchor="w")
+
+    timeline = tk.Frame(activity, bg=colors["activity"])
+    timeline.pack(fill=tk.BOTH, expand=True, padx=16)
+    environment_var = tk.StringVar(value="ADB и экран: проверка...")
+    environment_label = tk.Label(
+        activity,
+        textvariable=environment_var,
+        bg=colors["activity"],
+        fg="#91A4AD",
+        font=("Segoe UI", 7),
+        wraplength=275,
+        justify=tk.LEFT,
+    )
+    environment_label.pack(fill=tk.X, padx=16, pady=(4, 7))
+    activity_tools = tk.Frame(activity, bg=colors["activity"])
+    activity_tools.pack(fill=tk.X, padx=14, pady=(0, 13))
+
+    check_busy = {"value": False}
+
+    def create_report():
+        try:
+            report_path = bot.create_diagnostic_report()
+        except Exception as exc:
+            messagebox.showerror("Отчёт", f"Не удалось создать отчёт:\n{exc}", parent=root)
+            return
+        messagebox.showinfo("Отчёт создан", f"Файл сохранён:\n{report_path}", parent=root)
+
+    report_button = tk.Button(
+        activity_tools,
+        text="Создать отчёт",
+        command=create_report,
+        bg="#405A65",
+        fg="#DCE5E8",
+        activebackground="#4A6773",
+        activeforeground="#FFFFFF",
+        relief=tk.FLAT,
+        bd=0,
+        font=("Bahnschrift", 7),
+        cursor="hand2",
+        pady=6,
+    )
+    report_button.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(4, 0))
+
+    repair_button = tk.Button(
+        activity_tools,
+        text="Восстановить ADB",
+        bg="#405A65",
+        fg="#DCE5E8",
+        activebackground="#4A6773",
+        activeforeground="#FFFFFF",
+        relief=tk.FLAT,
+        bd=0,
+        font=("Bahnschrift", 7),
+        cursor="hand2",
+        pady=6,
+    )
+    repair_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+
+    def refresh_timeline():
+        for widget in timeline.winfo_children():
+            widget.destroy()
+        for index, (stamp, message) in enumerate(status_events):
+            row = tk.Frame(timeline, bg=colors["activity"])
+            row.pack(fill=tk.X, pady=4)
+            tk.Label(
+                row,
+                text=stamp,
+                bg=colors["activity"],
+                fg="#8398A1",
+                font=("Bahnschrift", 7),
+                width=5,
+                anchor="e",
+            ).pack(side=tk.LEFT, padx=(0, 8))
+            tk.Label(
+                row,
+                text="●",
+                bg=colors["activity"],
+                fg=colors["accent"] if index == 0 else colors["green"],
+                font=("Segoe UI", 8),
+            ).pack(side=tk.LEFT, anchor="n", padx=(0, 8))
+            tk.Label(
+                row,
+                text=message,
+                bg=colors["activity"],
+                fg="#D4DEE2" if index == 0 else "#AAB9BF",
+                font=("Segoe UI", 7),
+                wraplength=188,
+                justify=tk.LEFT,
+                anchor="w",
+            ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+    def record_status(*_args):
+        message = " ".join(status_var.get().split())
+        if not message:
+            return
+        message = message[:105] + ("..." if len(message) > 105 else "")
+        if status_events and status_events[0][1] == message:
+            return
+        status_events.appendleft((time.strftime("%H:%M"), message))
+        refresh_timeline()
+
+    bot.attach_status_var(status_var)
+    status_var.trace_add("write", record_status)
+    record_status()
 
     def save_rotation():
         bot.account_rotation_enabled = bool(rotation_var.get())
         bot.save_config()
 
     rotation_var.trace_add("write", lambda *_args: save_rotation())
-    ttk.Button(account_frame, text="Управление", command=lambda: AccountsDialog(root, bot, refresh_all)).pack(side=tk.RIGHT)
 
-    task_vars = {}
-    task_rows = {}
-    canvas_frame = ttk.Frame(outer)
-    canvas_frame.pack(fill=tk.BOTH, expand=True)
-    canvas = tk.Canvas(canvas_frame, bg="#f3f1eb", highlightthickness=0)
-    scrollbar = ttk.Scrollbar(canvas_frame, orient=tk.VERTICAL, command=canvas.yview)
-    content = ttk.Frame(canvas)
-    window_id = canvas.create_window((0, 0), window=content, anchor="nw")
-    canvas.configure(yscrollcommand=scrollbar.set)
-    canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-    content.bind("<Configure>", lambda _event: canvas.configure(scrollregion=canvas.bbox("all")))
-    canvas.bind("<Configure>", lambda event: canvas.itemconfigure(window_id, width=event.width))
-    def scroll_tasks(event):
-        units = -1 if event.delta > 0 else 1
-        canvas.yview_scroll(units * 3, "units")
-        return "break"
+    def save_marches():
+        try:
+            bot.routine_max_marches = min(5, max(1, int(marches_var.get())))
+        except (tk.TclError, ValueError):
+            return
+        marches_var.set(bot.routine_max_marches)
+        bot.routine_march_deadlines = bot.routine_march_deadlines[:bot.routine_max_marches]
+        bot.save_config()
 
-    root.bind("<MouseWheel>", scroll_tasks)
+    _bind_numeric_wheel(marches_spin, marches_var, 1, 5)
+    marches_spin.configure(command=save_marches)
+    marches_spin.bind("<FocusOut>", lambda _event: save_marches())
 
     def toggle_task(task):
         value = bool(task_vars[task["id"]].get())
@@ -398,139 +948,202 @@ def build_compact_ui(root, bot):
         bot.set_routine_enabled(task["id"], value)
         refresh_all()
 
+    def create_task_toggle(parent, task, variable):
+        control = tk.Frame(parent, bg=colors["surface"])
+        box = tk.Canvas(
+            control,
+            width=15,
+            height=15,
+            bg=colors["surface"],
+            highlightthickness=0,
+            cursor="hand2",
+        )
+        box.pack(side=tk.LEFT, padx=(0, 7))
+        label = tk.Label(
+            control,
+            text=task.get("name", task["id"]),
+            bg=colors["surface"],
+            fg="#46535A",
+            activebackground=colors["surface"],
+            activeforeground=colors["text"],
+            font=("Segoe UI", 8),
+            anchor="w",
+            cursor="hand2",
+        )
+        label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        def redraw(*_args):
+            selected = bool(variable.get())
+            box.delete("all")
+            box.create_rectangle(
+                1,
+                1,
+                14,
+                14,
+                fill=colors["accent"] if selected else colors["surface"],
+                outline=colors["accent"] if selected else "#A7B5BC",
+                width=1,
+            )
+            if selected:
+                box.create_line(4, 8, 7, 11, 12, 4, fill="#FFFFFF", width=2)
+
+        def click(_event=None):
+            variable.set(not bool(variable.get()))
+            redraw()
+            toggle_task(task)
+            return "break"
+
+        box.bind("<Button-1>", click)
+        label.bind("<Button-1>", click)
+        redraw()
+        return control
+
     def build_task_rows():
-        for widget in content.winfo_children():
+        position = cards_canvas.yview()[0] if cards_canvas.winfo_exists() else 0.0
+        for widget in cards_holder.winfo_children():
             widget.destroy()
         task_vars.clear()
         task_rows.clear()
         grouped = {}
         for task in bot.routine_tasks:
             grouped.setdefault(task.get("category", "custom"), []).append(task)
+
+        card_index = 0
         for category in CATEGORY_ORDER:
             tasks = grouped.get(category, [])
             if not tasks:
                 continue
-            frame = ttk.LabelFrame(content, text=CATEGORY_TITLES.get(category, category), padding=8)
-            frame.pack(fill=tk.X, pady=4)
-            frame.columnconfigure(0, weight=1)
-            frame.columnconfigure(1, weight=1)
+            card = tk.Frame(
+                cards_holder,
+                bg=colors["surface"],
+                highlightthickness=1,
+                highlightbackground=colors["line"],
+            )
+            card.grid(
+                row=card_index // 2,
+                column=card_index % 2,
+                sticky="nsew",
+                padx=(0, 6) if card_index % 2 == 0 else (6, 0),
+                pady=6,
+            )
+            tk.Frame(card, bg=colors["accent"], width=4).pack(side=tk.LEFT, fill=tk.Y)
+            card_body = tk.Frame(card, bg=colors["surface"], padx=12, pady=10)
+            card_body.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            card_header = tk.Frame(card_body, bg=colors["surface"])
+            card_header.pack(fill=tk.X, pady=(0, 5))
+            tk.Label(
+                card_header,
+                text=CATEGORY_TITLES.get(category, category),
+                bg=colors["surface"],
+                fg=colors["text"],
+                font=("Bahnschrift", 10, "bold"),
+            ).pack(side=tk.LEFT)
+            active_count = sum(bool(task.get("enabled", False)) for task in tasks)
+            tk.Label(
+                card_header,
+                text=f"{active_count} активно",
+                bg=colors["surface_alt"],
+                fg=colors["muted"],
+                font=("Segoe UI", 7),
+                padx=8,
+                pady=3,
+            ).pack(side=tk.RIGHT)
+
             for index, task in enumerate(tasks):
-                cell = ttk.Frame(frame)
-                cell.grid(row=index // 2, column=index % 2, sticky="ew", padx=4, pady=3)
+                if index:
+                    tk.Frame(card_body, bg="#DFE7EA", height=1).pack(fill=tk.X, pady=2)
+                row = tk.Frame(card_body, bg=colors["surface"], height=31)
+                row.pack(fill=tk.X)
+                row.pack_propagate(False)
                 variable = tk.BooleanVar(value=bool(task.get("enabled", False)))
                 task_vars[task["id"]] = variable
-                ttk.Checkbutton(
-                    cell,
-                    text=task.get("name", task["id"]),
-                    variable=variable,
-                    command=lambda current=task: toggle_task(current),
-                ).pack(side=tk.LEFT)
+                check = create_task_toggle(row, task, variable)
+                check.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
                 if task["id"] == "research":
-                    branch_labels = {
-                        "off": "Отключено",
-                        "economy": "Экономика",
-                        "war": "Война",
-                        "any": "Любое",
-                    }
+                    branch_labels = {"off": "Выкл", "economy": "Экономика", "war": "Война", "any": "Любое"}
                     reverse_branches = {label: key for key, label in branch_labels.items()}
                     branch_var = tk.StringVar(
-                        value=branch_labels.get(task.get("settings", {}).get("branch", "off"), "Отключено")
+                        value=branch_labels.get(task.get("settings", {}).get("branch", "off"), "Выкл")
                     )
 
-                    def select_research_branch(_event=None, current=task, variable=branch_var):
+                    def select_research_branch(_event=None, current_task=task, variable=branch_var):
                         branch = reverse_branches.get(variable.get(), "off")
-                        current.setdefault("settings", {})["branch"] = branch
-                        current["enabled"] = branch != "off"
-                        bot.groups[effective_task_group(current)] = current["enabled"]
+                        current_task.setdefault("settings", {})["branch"] = branch
+                        current_task["enabled"] = branch != "off"
+                        bot.groups[effective_task_group(current_task)] = current_task["enabled"]
                         bot.save_config()
                         refresh_all()
 
                     branch_combo = ttk.Combobox(
-                        cell,
+                        row,
                         textvariable=branch_var,
                         values=list(reverse_branches),
                         state="readonly",
-                        width=11,
+                        width=9,
+                        style="Deck.TCombobox",
                     )
-                    branch_combo.pack(side=tk.LEFT, padx=(6, 0))
+                    branch_combo.pack(side=tk.RIGHT, padx=(4, 0))
                     branch_combo.bind("<<ComboboxSelected>>", select_research_branch)
                 elif task["id"] == "collective_mind":
                     level_var = tk.StringVar(value=str(task.get("settings", {}).get("level", 6)))
 
-                    def select_collective_level(_event=None, current=task, variable=level_var):
-                        current.setdefault("settings", {})["level"] = 7 if variable.get() == "7" else 6
+                    def select_collective_level(_event=None, current_task=task, variable=level_var):
+                        current_task.setdefault("settings", {})["level"] = 7 if variable.get() == "7" else 6
                         bot.save_config()
 
                     level_combo = ttk.Combobox(
-                        cell,
+                        row,
                         textvariable=level_var,
                         values=("6", "7"),
                         state="readonly",
                         width=3,
+                        style="Deck.TCombobox",
                     )
-                    level_combo.pack(side=tk.LEFT, padx=(6, 0))
+                    level_combo.pack(side=tk.RIGHT, padx=(4, 0))
                     level_combo.bind("<<ComboboxSelected>>", select_collective_level)
+
+                if task_setting_specs(task["id"]):
+                    tk.Button(
+                        row,
+                        text="···",
+                        command=lambda current_task=task: TaskSettingsDialog(root, bot, current_task, refresh_all),
+                        bg=colors["surface"],
+                        fg=colors["muted"],
+                        activebackground=colors["surface_alt"],
+                        activeforeground=colors["text"],
+                        relief=tk.FLAT,
+                        bd=0,
+                        font=("Bahnschrift", 9, "bold"),
+                        cursor="hand2",
+                        width=3,
+                    ).pack(side=tk.RIGHT)
+
                 group = effective_task_group(task)
                 template_count = len([image for image in bot.search_images if image.get("group") == group])
-                if task_setting_specs(task["id"]):
-                    ttk.Button(
-                        cell,
-                        text="⋯",
-                        width=3,
-                        command=lambda current=task: TaskSettingsDialog(root, bot, current, refresh_all),
-                    ).pack(side=tk.RIGHT)
-                status = "готово" if template_count else "не обучено"
-                label = ttk.Label(cell, text=status, foreground="#1f6b52" if template_count else "#9a3412")
-                label.pack(side=tk.RIGHT, padx=6)
-                task_rows[task["id"]] = label
+                indicator = tk.Label(
+                    row,
+                    text="●",
+                    bg=colors["surface"],
+                    fg=colors["green"] if template_count else "#C99162",
+                    font=("Segoe UI", 7),
+                )
+                indicator.pack(side=tk.RIGHT, padx=4)
+                task_rows[task["id"]] = indicator
+            card_index += 1
 
-    control = ttk.Frame(outer)
-    control.pack(fill=tk.X, pady=(10, 6))
-    start_button = ttk.Button(control, text="Запустить отмеченные", style="Primary.TButton", command=bot.start_routines)
-    start_button.pack(side=tk.LEFT)
-    pause_button = ttk.Button(control, text="Пауза", command=bot.toggle_pause)
-    pause_button.pack(side=tk.LEFT, padx=6)
-    stop_button = ttk.Button(control, text="Стоп", style="Danger.TButton", command=bot.stop)
-    stop_button.pack(side=tk.LEFT)
-
-    marches = ttk.Frame(control)
-    marches.pack(side=tk.RIGHT)
-    ttk.Label(marches, text="Походы").pack(side=tk.LEFT, padx=4)
-    marches_var = tk.IntVar(value=bot.routine_max_marches)
-
-    def save_marches():
-        try:
-            bot.routine_max_marches = min(5, max(1, int(marches_var.get())))
-        except (tk.TclError, ValueError):
-            return
-        bot.routine_march_deadlines = bot.routine_march_deadlines[:bot.routine_max_marches]
-        bot.save_config()
-
-    marches_spin = ttk.Spinbox(
-        marches,
-        from_=1,
-        to=5,
-        width=3,
-        textvariable=marches_var,
-        command=save_marches,
-    )
-    marches_spin.pack(side=tk.LEFT)
-    _bind_numeric_wheel(marches_spin, marches_var, 1, 5)
-    marches_spin.bind("<FocusOut>", lambda _event: save_marches())
-
-    adb_frame = ttk.LabelFrame(outer, text="ADB и экран", padding=7)
-    adb_frame.pack(fill=tk.X, pady=4)
-    adb_state = tk.StringVar(value="ADB и экран: проверка...")
-    ttk.Label(adb_frame, textvariable=adb_state, wraplength=700).pack(fill=tk.X, side=tk.BOTTOM, pady=(5, 0))
-    adb_controls = ttk.Frame(adb_frame)
-    adb_controls.pack(fill=tk.X, side=tk.TOP)
-    check_busy = {"value": False}
+        cards_holder.update_idletasks()
+        cards_canvas.configure(scrollregion=cards_canvas.bbox("all"))
+        cards_canvas.yview_moveto(position)
 
     def check_environment():
         if check_busy["value"]:
             return
         check_busy["value"] = True
-        adb_state.set("ADB и экран: проверка...")
+        connection_title.set("Проверка связи")
+        connection_detail.set("ADB и экран · ожидание")
+        connection_dot.configure(fg="#A9B8BE")
+        environment_var.set("ADB и экран: проверка...")
         check_button.configure(state=tk.DISABLED)
 
         def worker():
@@ -540,15 +1153,18 @@ def build_compact_ui(root, bot):
             def finish():
                 check_busy["value"] = False
                 check_button.configure(state=tk.NORMAL)
-                adb_state.set(summary)
+                environment_var.set(summary)
+                connection_title.set("Подключено" if ok else "Нет связи")
+                connection_detail.set(
+                    f"LDPlayer · {bot.adb_serial}" if ok else "Нажмите «Восстановить ADB»"
+                )
+                connection_dot.configure(fg=colors["green"] if ok else colors["red"])
                 if not ok:
                     bot.sync_status_message()
 
             root.after(0, finish)
 
         threading.Thread(target=worker, name="EnvironmentCheck", daemon=True).start()
-
-    repair_button = ttk.Button(adb_controls, text="Восстановить ADB")
 
     def repair_adb():
         target = bot.get_adb_repair_target()
@@ -585,29 +1201,6 @@ def build_compact_ui(root, bot):
         threading.Thread(target=worker, name="AdbRepair", daemon=True).start()
 
     repair_button.configure(command=repair_adb)
-    repair_button.pack(side=tk.RIGHT)
-    check_button = ttk.Button(
-        adb_controls,
-        text="Проверить ADB и экран",
-        command=check_environment,
-    )
-    check_button.pack(side=tk.RIGHT, padx=5)
-
-    def create_report():
-        try:
-            report_path = bot.create_diagnostic_report()
-        except Exception as exc:
-            messagebox.showerror("Отчёт", f"Не удалось создать отчёт:\n{exc}", parent=root)
-            return
-        messagebox.showinfo("Отчёт создан", f"Файл сохранён:\n{report_path}", parent=root)
-
-    ttk.Button(adb_controls, text="Создать отчёт", command=create_report).pack(side=tk.RIGHT, padx=5)
-
-    status_var = tk.StringVar(value=bot.status_message or "Готов к запуску")
-    bot.attach_status_var(status_var)
-    status_frame = ttk.LabelFrame(outer, text="Состояние", padding=9)
-    status_frame.pack(fill=tk.X, pady=(4, 0))
-    ttk.Label(status_frame, textvariable=status_var, wraplength=690, justify=tk.LEFT).pack(anchor="w")
 
     def select_account(_event=None):
         name = account_var.get()
@@ -621,23 +1214,60 @@ def build_compact_ui(root, bot):
     def refresh_all():
         names = [profile.get("name") for profile in bot.account_profiles]
         account_combo["values"] = names
-        current = bot.get_current_account()
-        account_var.set(current.get("name") if current else (names[0] if names else ""))
+        current_account = bot.get_current_account()
+        account_var.set(current_account.get("name") if current_account else (names[0] if names else ""))
         build_task_rows()
+        selected_var.set(f"{sum(bool(task.get('enabled')) for task in bot.routine_tasks)} задач")
+
+    def format_countdown(seconds):
+        seconds = max(0, int(seconds))
+        if seconds < 60:
+            return f"0:{seconds:02d}"
+        if seconds < 3600:
+            return f"{seconds // 60}:{seconds % 60:02d}"
+        return f"{seconds // 3600}:{(seconds % 3600) // 60:02d}"
 
     def update_state():
+        now = time.time()
+        enabled_tasks = [task for task in bot.routine_tasks if task.get("enabled")]
+        selected_var.set(f"{len(enabled_tasks)} задач")
+        busy_marches = sum(deadline > now for deadline in bot.routine_march_deadlines)
+        march_usage_var.set(f"{busy_marches} / {bot.routine_max_marches}")
+
+        current_task = bot.get_routine_task(bot.current_routine_task_id) if bot.current_routine_task_id else None
+        current_task_var.set(current_task.get("name", "Ожидание") if current_task else "Ожидание следующей задачи")
+
+        deadlines = [
+            bot.routine_next_run.get(task["id"], 0.0)
+            for task in enabled_tasks
+            if bot.routine_next_run.get(task["id"], 0.0) > now
+        ]
+        next_cycle_var.set(format_countdown(min(deadlines) - now) if deadlines else "готово")
+
         if bot.is_running:
             start_button.configure(state=tk.DISABLED)
-            pause_button.configure(state=tk.NORMAL, text="Продолжить" if bot.is_paused else "Пауза")
+            pause_button.configure(state=tk.NORMAL, text="ПРОДОЛЖИТЬ" if bot.is_paused else "ПАУЗА")
             stop_button.configure(state=tk.NORMAL)
+            if bot.is_paused:
+                live_badge.configure(text="ПАУЗА", bg="#74613C", fg="#F1D8A8")
+                run_summary_title.set("Автоматический цикл на паузе")
+            else:
+                live_badge.configure(text="В РАБОТЕ", bg=colors["green_dark"], fg="#CDE2D3")
+                run_summary_title.set("Автоматический цикл работает")
         else:
             ready_state = tk.DISABLED if check_busy["value"] else tk.NORMAL
             start_button.configure(state=ready_state)
-            pause_button.configure(state=tk.DISABLED, text="Пауза")
+            pause_button.configure(state=tk.DISABLED, text="ПАУЗА")
             stop_button.configure(state=tk.DISABLED)
+            live_badge.configure(text="ГОТОВ", bg="#425A50", fg="#CDE2D3")
+            run_summary_title.set("Автоматический цикл готов")
+
+        detail = " ".join(status_var.get().split())
+        run_summary_detail.set(detail[:95] + ("..." if len(detail) > 95 else ""))
         root.compact_after_id = root.after(500, update_state)
 
     root.bind("<<AccountChanged>>", lambda _event: refresh_all())
+    root.refresh_routine_summary = refresh_all
     refresh_all()
     root.after(250, check_environment)
     update_state()

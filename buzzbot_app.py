@@ -74,7 +74,7 @@ from buzzbot.state import BotState, compute_runtime_seconds
 from buzzbot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.1.15"
+APP_VERSION = "3.2.0"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -7157,6 +7157,8 @@ def main():
     root.status_after_id = None
     root.active_after_id = None
     root.monitor_after_id = None
+    root.open_area_manager = lambda: AreaManager(root, bot).show()
+    root.open_group_schedule = lambda: GroupScheduleDialog(root, bot).show()
 
     build_compact_ui(root, bot)
 

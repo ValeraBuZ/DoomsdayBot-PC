@@ -22,6 +22,7 @@ ARCHIVE_PATH = DIST_ROOT / f"{BUNDLE_NAME}.zip"
 CONFIG_PATH = PROJECT_ROOT / "config.json"
 EXAMPLE_CONFIG_PATH = PROJECT_ROOT / "config.example.json"
 IMG_DIR = PROJECT_ROOT / "img"
+ASSET_DIR = PROJECT_ROOT / "buzzbot" / "assets"
 
 
 def build_spec_text() -> str:
@@ -36,6 +37,10 @@ datas = []
 
 if config_file.exists():
     datas.append((str(config_file), "."))
+
+asset_dir = project_root / "buzzbot" / "assets"
+if asset_dir.exists():
+    datas.append((str(asset_dir), "buzzbot/assets"))
 
 
 a = Analysis(
