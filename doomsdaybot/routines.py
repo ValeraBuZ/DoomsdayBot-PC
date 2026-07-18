@@ -637,6 +637,25 @@ def routine_home_recovery_due(task, had_action, attempted, idle_seconds):
     )
 
 
+def routine_idle_screen_recovery_due(
+    task,
+    had_action,
+    guard_visible,
+    attempted,
+    outside_seconds,
+):
+    """Recover an idle-completion task that became stuck on another screen."""
+    timeout = max(1.0, float(task.get("timeout_seconds", 8.0) or 8.0))
+    recovery_delay = max(45.0, min(90.0, timeout * 3.0))
+    return bool(
+        task.get("complete_when_idle")
+        and had_action
+        and not guard_visible
+        and not attempted
+        and float(outside_seconds) >= recovery_delay
+    )
+
+
 def routine_requires_settlement(task):
     """Return whether a task must run inside the player's settlement."""
     return str(task.get("category") or "") in {
@@ -675,6 +694,32 @@ def no_available_squad_wait_exceeded(task, completed_steps, idle_seconds, grace_
         and "march" not in completed
         and float(idle_seconds) >= float(grace_seconds)
     )
+
+
+def resource_search_retry_due(task, completed_steps, attempts, max_attempts=3):
+    """Retry a resource search when the selected map cell cannot be gathered."""
+    completed = {str(step) for step in completed_steps}
+    return bool(
+        task.get("id") in RESOURCE_TASK_IDS
+        and "search_button" in completed
+        and "gather" not in completed
+        and int(attempts) < int(max_attempts)
+    )
+
+
+def radar_marker_was_confirmed(uid, x, y, confirmed_keys, radius=12):
+    """Match an animated radar marker to a previously confirmed deployment."""
+    marker_uid = str(uid or "")
+    radius_squared = float(radius) ** 2
+    for key in confirmed_keys:
+        if not isinstance(key, (tuple, list)) or len(key) != 3:
+            continue
+        key_uid, key_x, key_y = key
+        if str(key_uid or "") != marker_uid:
+            continue
+        if (float(key_x) - float(x)) ** 2 + (float(key_y) - float(y)) ** 2 <= radius_squared:
+            return True
+    return False
 
 
 def upgrade_resource_runtime_metadata(images, tasks):
@@ -1072,6 +1117,7 @@ def upgrade_radar_runtime_metadata(images, tasks):
         image["routine_priority"] = priority
         if step_id == "march":
             image["confirm_disappears"] = True
+            image["confirms_radar_marker"] = True
         # Radar is complete only after no actionable templates remain. A positive
         # max_tasks value is retained as a setting for compatibility, not as an
         # early-completion trigger.
@@ -1086,13 +1132,10 @@ def upgrade_radar_runtime_metadata(images, tasks):
                 3,
                 int(image.get("orb_match_threshold", 3) or 3),
             )
-            # A dispatched radar marker can stay visible until its timer ends.
-            # Do not send another squad to that same map position meanwhile.
+            # Retry markers that did not open, then extend the block only after
+            # the final deployment button confirms a real radar march.
             image["allow_repeat"] = True
-            image["block_seconds"] = max(
-                900.0,
-                float(image.get("block_seconds", 0.0) or 0.0),
-            )
+            image["block_seconds"] = 8.0
         upgraded += 1
 
     for task in tasks:

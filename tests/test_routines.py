@@ -18,7 +18,10 @@ from doomsdaybot.routines import (
     normalize_routine_tasks,
     pick_due_task_index,
     prize_hunt_branch_allows_image,
+    radar_marker_was_confirmed,
+    resource_search_retry_due,
     routine_home_recovery_due,
+    routine_idle_screen_recovery_due,
     routine_requires_settlement,
     routine_march_context_key,
     runtime_step_is_ready,
@@ -311,6 +314,18 @@ class RoutineTaskTests(unittest.TestCase):
             routine_home_recovery_due({"uses_march": False}, False, False, 20.0)
         )
 
+    def test_idle_screen_recovery_waits_for_a_confirmed_stall(self):
+        task = {
+            "id": "radar",
+            "complete_when_idle": True,
+            "timeout_seconds": 20.0,
+        }
+        self.assertFalse(routine_idle_screen_recovery_due(task, True, False, False, 59.9))
+        self.assertTrue(routine_idle_screen_recovery_due(task, True, False, False, 60.0))
+        self.assertFalse(routine_idle_screen_recovery_due(task, False, False, False, 60.0))
+        self.assertFalse(routine_idle_screen_recovery_due(task, True, True, False, 60.0))
+        self.assertFalse(routine_idle_screen_recovery_due(task, True, False, True, 60.0))
+
     def test_settlement_context_is_required_only_for_base_tasks(self):
         self.assertTrue(routine_requires_settlement({"category": "army"}))
         self.assertTrue(routine_requires_settlement({"category": "daily"}))
@@ -422,6 +437,20 @@ class RoutineTaskTests(unittest.TestCase):
             6,
         )
         self.assertIsNone(select_best_resource_result_level([]))
+
+    def test_resource_search_retries_only_before_gather_and_within_limit(self):
+        task = {"id": "metal"}
+        self.assertTrue(resource_search_retry_due(task, {"search_button"}, 0))
+        self.assertTrue(resource_search_retry_due(task, {"world_search", "search_button"}, 2))
+        self.assertFalse(resource_search_retry_due(task, {"search_button", "gather"}, 0))
+        self.assertFalse(resource_search_retry_due(task, {"search_button"}, 3))
+        self.assertFalse(resource_search_retry_due({"id": "radar"}, {"search_button"}, 0))
+
+    def test_confirmed_radar_marker_allows_small_animation_offset(self):
+        keys = {("marker-1", 415, 507)}
+        self.assertTrue(radar_marker_was_confirmed("marker-1", 421, 512, keys))
+        self.assertFalse(radar_marker_was_confirmed("marker-1", 440, 512, keys))
+        self.assertFalse(radar_marker_was_confirmed("marker-2", 415, 507, keys))
 
     def test_healing_training_and_hunts_are_upgraded_to_strict_sequences(self):
         import uuid
@@ -619,14 +648,16 @@ class RoutineTaskTests(unittest.TestCase):
         detail_uid = str(uuid.uuid5(namespace, "radar:open_supply"))
         marker_uid = str(uuid.uuid5(namespace, "radar:task_supply"))
         wait_uid = str(uuid.uuid5(namespace, "radar:wait_in_progress"))
+        march_uid = str(uuid.uuid5(namespace, "radar:march"))
         images = [
             {"uid": marker_uid},
             {"uid": detail_uid, "limit_key": "max_tasks"},
             {"uid": wait_uid},
+            {"uid": march_uid},
         ]
         tasks = [{"id": "radar", "timeout_seconds": 15.0}]
 
-        self.assertEqual(upgrade_radar_runtime_metadata(images, tasks), 3)
+        self.assertEqual(upgrade_radar_runtime_metadata(images, tasks), 4)
         self.assertLess(images[2]["routine_priority"], images[1]["routine_priority"])
         self.assertLess(images[1]["routine_priority"], images[0]["routine_priority"])
         self.assertNotIn("limit_key", images[1])
@@ -635,9 +666,11 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertTrue(tasks[0]["complete_when_idle"])
         self.assertEqual(tasks[0]["idle_confirmations"], 3)
         marker = next(image for image in images if image["uid"] == marker_uid)
+        march = next(image for image in images if image["uid"] == march_uid)
         self.assertEqual(marker["confidence"], 0.68)
         self.assertEqual(marker["orb_match_threshold"], 3)
-        self.assertEqual(marker["block_seconds"], 900.0)
+        self.assertEqual(marker["block_seconds"], 8.0)
+        self.assertTrue(march["confirms_radar_marker"])
 
 
 if __name__ == "__main__":

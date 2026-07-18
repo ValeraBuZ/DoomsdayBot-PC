@@ -56,7 +56,10 @@ from doomsdaybot.routines import (
     normalize_routine_tasks,
     pick_due_task_index,
     prize_hunt_branch_allows_image,
+    radar_marker_was_confirmed,
+    resource_search_retry_due,
     routine_home_recovery_due,
+    routine_idle_screen_recovery_due,
     routine_requires_settlement,
     routine_march_context_key,
     runtime_step_is_ready,
@@ -71,7 +74,7 @@ from doomsdaybot.state import BotState, compute_runtime_seconds
 from doomsdaybot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.1.13"
+APP_VERSION = "3.1.14"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -603,6 +606,12 @@ class AutoClicker:
         self.routine_completed_steps = set()
         self.routine_idle_confirmation_count = 0
         self.routine_home_recovery_attempted = False
+        self.routine_idle_guard_visible = False
+        self.routine_idle_outside_since = 0.0
+        self.routine_idle_recovery_attempted = False
+        self.routine_resource_retry_count = 0
+        self.routine_radar_pending_marker_key = None
+        self.routine_radar_confirmed_marker_keys = set()
         self.routine_only_task_id = None
 
         # Profiles let one LDPlayer instance rotate through saved in-game accounts.
@@ -2422,6 +2431,12 @@ class AutoClicker:
         self.routine_completed_steps = set()
         self.routine_idle_confirmation_count = 0
         self.routine_home_recovery_attempted = False
+        self.routine_idle_guard_visible = False
+        self.routine_idle_outside_since = 0.0
+        self.routine_idle_recovery_attempted = False
+        self.routine_resource_retry_count = 0
+        self.routine_radar_pending_marker_key = None
+        self.routine_radar_confirmed_marker_keys = set()
         template_count = len(self.get_routine_templates(task, active_only=True))
         self.set_status_message(
             self.tr(
@@ -2449,6 +2464,7 @@ class AutoClicker:
         return task
 
     def _routine_idle_completion_ready(self, task):
+        self.routine_idle_guard_visible = False
         if not task.get("complete_when_idle"):
             return False
         if self.uses_adb:
@@ -2476,11 +2492,26 @@ class AutoClicker:
         if location is None:
             self.routine_idle_confirmation_count = 0
             return False
+        self.routine_idle_guard_visible = True
         for image in self.search_images:
             if not image.get("prevents_idle_completion") or not self._is_active(image):
                 continue
             blocker_location, _blocker_bbox, _blocker_confidence = self._locate_image(image)
             if blocker_location is not None:
+                if (
+                    task.get("id") == "radar"
+                    and radar_marker_was_confirmed(
+                        image.get("uid"),
+                        blocker_location.x,
+                        blocker_location.y,
+                        self.routine_radar_confirmed_marker_keys,
+                    )
+                ):
+                    logger.info(
+                        "Idle completion ignores confirmed radar marker %s",
+                        image.get("description"),
+                    )
+                    continue
                 self.routine_idle_confirmation_count = 0
                 logger.info(
                     "Idle completion blocked by visible template %s",
@@ -2597,6 +2628,9 @@ class AutoClicker:
         self.routine_completed_steps = set()
         self.routine_idle_confirmation_count = 0
         self.routine_home_recovery_attempted = False
+        self.routine_idle_guard_visible = False
+        self.routine_idle_outside_since = 0.0
+        self.routine_idle_recovery_attempted = False
 
     def _try_recover_current_routine_home(self, task):
         self.routine_home_recovery_attempted = True
@@ -2613,6 +2647,95 @@ class AutoClicker:
         self.blocked_coords.clear()
         self.routine_last_action_time = time.time()
         return True
+
+    def _try_recover_current_routine_idle_screen(self, task):
+        self.routine_idle_recovery_attempted = True
+        logger.info(
+            "Routine %s is stuck outside its completion screen; returning home once",
+            task.get("id"),
+        )
+        self.set_status_message(
+            f"{self.get_routine_task_name(task)}: возвращаюсь из постороннего окна",
+            force=True,
+        )
+        if not self._return_to_main_screen(
+            max_back_steps=5,
+            require_settlement=routine_requires_settlement(task),
+        ):
+            return False
+        self.blocked_coords.clear()
+        self.routine_idle_guard_visible = False
+        self.routine_idle_outside_since = 0.0
+        self.routine_last_action_time = time.time()
+        return True
+
+    def _retry_current_resource_search(self, task):
+        if not resource_search_retry_due(
+            task,
+            self.routine_completed_steps,
+            self.routine_resource_retry_count,
+        ):
+            return False
+
+        self.routine_resource_retry_count += 1
+        attempt = self.routine_resource_retry_count
+        display = self.get_display_profile() if self.uses_adb else make_display_profile(1280, 720)
+        swipes = (
+            ((930, 360), (350, 360)),
+            ((350, 360), (930, 360)),
+            ((640, 560), (640, 260)),
+        )
+        swipe_from, swipe_to = swipes[(attempt - 1) % len(swipes)]
+        from_x = int(round(swipe_from[0] * display.scale_x))
+        from_y = int(round(swipe_from[1] * display.scale_y))
+        to_x = int(round(swipe_to[0] * display.scale_x))
+        to_y = int(round(swipe_to[1] * display.scale_y))
+
+        self.set_status_message(
+            f"\u0420\u0435\u0441\u0443\u0440\u0441 \u0437\u0430\u043d\u044f\u0442 \u0438\u043b\u0438 \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d: \u0438\u0449\u0443 \u0434\u0440\u0443\u0433\u0443\u044e \u043a\u043b\u0435\u0442\u043a\u0443 ({attempt}/3)",
+            force=True,
+        )
+        try:
+            if self.uses_adb:
+                self.adb_client.keyevent(4)
+            else:
+                pyautogui.press("escape")
+            self._invalidate_capture()
+            self._interruptible_sleep(0.6)
+            if self.uses_adb:
+                self.adb_client.swipe(from_x, from_y, to_x, to_y, 500)
+            else:
+                pyautogui.moveTo(from_x, from_y)
+                pyautogui.dragTo(to_x, to_y, duration=0.5, button="left")
+            self._invalidate_capture()
+            self._interruptible_sleep(0.8)
+            if not self._prepare_world_search_screen():
+                logger.warning("Resource search retry %s could not reopen world search", attempt)
+                return False
+        except Exception:
+            logger.exception("Resource search retry %s failed", attempt)
+            return False
+
+        self.routine_completed_steps = {"world_search"}
+        self.routine_last_action_time = time.time()
+        self.routine_idle_confirmation_count = 0
+        self.blocked_coords.clear()
+        logger.info(
+            "Resource search retry %s/3 prepared for %s without attacking",
+            attempt,
+            task.get("id"),
+        )
+        return True
+
+    def _confirm_pending_radar_marker(self):
+        marker_key = self.routine_radar_pending_marker_key
+        if marker_key is None:
+            return
+        self.routine_radar_confirmed_marker_keys.add(marker_key)
+        if self.anti_loop_enabled:
+            self.blocked_coords[marker_key] = time.time() + 900.0
+        logger.info("Radar marker confirmed by deployment: %s", marker_key)
+        self.routine_radar_pending_marker_key = None
 
     def _defer_current_routine_no_action(self, now=None):
         now = time.time() if now is None else float(now)
@@ -2650,6 +2773,9 @@ class AutoClicker:
         self.routine_completed_steps = set()
         self.routine_idle_confirmation_count = 0
         self.routine_home_recovery_attempted = False
+        self.routine_idle_guard_visible = False
+        self.routine_idle_outside_since = 0.0
+        self.routine_idle_recovery_attempted = False
 
     def _defer_current_routine_no_squad(self, now=None):
         now = time.time() if now is None else float(now)
@@ -2679,6 +2805,9 @@ class AutoClicker:
         self.routine_completed_steps = set()
         self.routine_idle_confirmation_count = 0
         self.routine_home_recovery_attempted = False
+        self.routine_idle_guard_visible = False
+        self.routine_idle_outside_since = 0.0
+        self.routine_idle_recovery_attempted = False
 
     def _defer_current_routine_unavailable(self, reason, now=None):
         now = time.time() if now is None else float(now)
@@ -2711,6 +2840,9 @@ class AutoClicker:
         self.routine_completed_steps = set()
         self.routine_idle_confirmation_count = 0
         self.routine_home_recovery_attempted = False
+        self.routine_idle_guard_visible = False
+        self.routine_idle_outside_since = 0.0
+        self.routine_idle_recovery_attempted = False
 
     def start_normal(self):
         self.routine_mode = False
@@ -3236,6 +3368,15 @@ class AutoClicker:
                                     self.routine_current_had_action = True
                                     self.routine_last_action_time = time.time()
                                     self.routine_idle_confirmation_count = 0
+                                    if (
+                                        current_routine_task.get("id") == "radar"
+                                        and img_config.get("prevents_idle_completion")
+                                    ):
+                                        self.routine_radar_pending_marker_key = (
+                                            img_config.get("uid") or img_config.get("path"),
+                                            round(location.x),
+                                            round(location.y),
+                                        )
                                     runtime_step = str(img_config.get("runtime_step") or "")
                                     if runtime_step:
                                         self.routine_completed_steps.update(
@@ -3246,6 +3387,11 @@ class AutoClicker:
                                             runtime_step,
                                             sorted(self.routine_completed_steps),
                                         )
+                                    if (
+                                        current_routine_task.get("id") == "radar"
+                                        and img_config.get("confirms_radar_marker")
+                                    ):
+                                        self._confirm_pending_radar_marker()
                                     complete_if_false = str(
                                         img_config.get("complete_if_setting_false") or ""
                                     )
@@ -3374,6 +3520,8 @@ class AutoClicker:
                             else:
                                 self._defer_current_routine_no_action(time.time())
                             continue
+                        if self._retry_current_resource_search(current_routine_task):
+                            continue
                         if (
                             current_routine_task.get("empty_home_is_success")
                             and self._is_main_screen_visible()
@@ -3399,10 +3547,36 @@ class AutoClicker:
                         ):
                             self._finish_current_routine(time.time())
                         elif current_routine_task.get("complete_when_idle"):
+                            if self.routine_idle_guard_visible:
+                                self.routine_idle_outside_since = 0.0
+                            elif self.routine_idle_outside_since <= 0:
+                                self.routine_idle_outside_since = time.time()
+                            outside_seconds = (
+                                time.time() - self.routine_idle_outside_since
+                                if self.routine_idle_outside_since > 0
+                                else 0.0
+                            )
+                            if routine_idle_screen_recovery_due(
+                                current_routine_task,
+                                self.routine_current_had_action,
+                                self.routine_idle_guard_visible,
+                                self.routine_idle_recovery_attempted,
+                                outside_seconds,
+                            ):
+                                if self._try_recover_current_routine_idle_screen(
+                                    current_routine_task
+                                ):
+                                    continue
+                                self._defer_current_routine_unavailable(
+                                    "не удалось вернуться из постороннего окна",
+                                    time.time(),
+                                )
+                                continue
                             self.routine_last_action_time = time.time()
                             logger.info(
-                                "Routine %s is idle outside its completion screen; continuing",
+                                "Routine %s is idle outside its completion screen for %.1f sec; continuing",
                                 current_routine_task.get("id"),
+                                outside_seconds,
                             )
                         else:
                             self._defer_current_routine_no_action(time.time())
