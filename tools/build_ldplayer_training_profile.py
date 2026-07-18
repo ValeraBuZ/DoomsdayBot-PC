@@ -1117,7 +1117,7 @@ def build_profile(destination):
     manifest = {
         "format": "doomsday-training-profile",
         "format_version": 1,
-        "app_version": "3.2.1",
+        "app_version": "3.2.2",
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "source_screen": {"width": 1280, "height": 720},
         "routine_tasks": tasks,
@@ -1284,6 +1284,8 @@ def build_profile(destination):
                 forward_guard_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "radar:forward_guard"))
                 if step_id in {"radar_screen_guard", "card_guard", "forward_guard"}:
                     configured_image["guard_only"] = True
+                if step_id == "open_radar":
+                    configured_image["requires_settlement_screen"] = True
                 if step_id == "open_any_task":
                     configured_image["requires_visible_uid"] = card_guard_uid
                 if step_id in {"open_supply", "open_car", "open_zombie"}:
@@ -1295,8 +1297,8 @@ def build_profile(destination):
                     # Keep color matching strict, but accept a small ORB keypoint set.
                     configured_image["orb_match_threshold"] = 3
                 if step_id == "wait_in_progress":
-                    configured_image["action"] = "wait"
-                    configured_image["delay"] = 1.0
+                    configured_image["action"] = "radar_defer_in_progress"
+                    configured_image["delay"] = 0.5
                 if step_id == "attack_zombie":
                     configured_image["action"] = "zombie_attack"
             if task_id == "heal" and step_id == "open_wounded":

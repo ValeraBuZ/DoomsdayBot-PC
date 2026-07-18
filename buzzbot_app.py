@@ -59,6 +59,7 @@ from buzzbot.routines import (
     is_task_effectively_enabled,
     next_due_task,
     next_run_after_finish,
+    next_run_after_radar_pass,
     no_action_retry_delay,
     no_available_squad_wait_exceeded,
     normalize_routine_tasks,
@@ -83,7 +84,7 @@ from buzzbot.state import BotState, compute_runtime_seconds
 from buzzbot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.2.1"
+APP_VERSION = "3.2.2"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -623,6 +624,7 @@ class AutoClicker:
         self.routine_resource_retry_count = 0
         self.routine_radar_pending_marker_key = None
         self.routine_radar_confirmed_marker_keys = set()
+        self.routine_radar_in_progress_seen = False
         self.routine_only_task_id = None
 
         # Profiles let one LDPlayer instance rotate through saved in-game accounts.
@@ -641,6 +643,7 @@ class AutoClicker:
         self.adb_client = None
         self._adb_frame_cache = None
         self._adb_frame_timestamp = 0.0
+        self._adb_iteration_frame = None
         self._adb_capture_lock = threading.RLock()
         self._adb_recovery_lock = threading.Lock()
         self._adb_last_recovery_attempt = 0.0
@@ -747,6 +750,7 @@ class AutoClicker:
         with self._adb_capture_lock:
             self._adb_frame_cache = None
             self._adb_frame_timestamp = 0.0
+            self._adb_iteration_frame = None
 
     def get_display_profile(self):
         return make_display_profile(self.player_width, self.player_height)
@@ -907,11 +911,11 @@ class AutoClicker:
 
     def check_adb_connection(self, notify=True):
         self._refresh_adb_client()
-        connected = self.adb_client.is_available()
+        connected = self.adb_client.is_responsive()
         auto_detected = False
         if not connected:
             auto_detected = self._auto_detect_adb_connection()
-            connected = auto_detected and self.adb_client.is_available()
+            connected = auto_detected and self.adb_client.is_responsive()
         if connected:
             key = 'adb_auto_connected' if auto_detected else 'adb_connected'
             message = self.tr(key, serial=self.adb_serial)
@@ -940,7 +944,7 @@ class AutoClicker:
         return connected
 
     def repair_adb_connection(self, instance_index=None):
-        if self._auto_detect_adb_connection() and self.adb_client.is_available():
+        if self._auto_detect_adb_connection() and self.adb_client.is_responsive():
             self.set_status_message(self.tr('adb_repaired', serial=self.adb_serial), force=True)
             return True
 
@@ -976,7 +980,7 @@ class AutoClicker:
         client = AdbClient(self.adb_path or None, target.adb_serial)
         deadline = time.monotonic() + 90.0
         while time.monotonic() < deadline:
-            if client.is_available():
+            if client.is_responsive():
                 self._adopt_adb_serial(target.adb_serial, target.index)
                 message = self.tr('adb_repaired', serial=target.adb_serial)
                 logger.info(message)
@@ -1084,6 +1088,8 @@ class AutoClicker:
     def _capture_adb_frame(self, force=False):
         now = time.monotonic()
         with self._adb_capture_lock:
+            if not force and self._adb_iteration_frame is not None:
+                return self._adb_iteration_frame
             if (
                 not force
                 and self._adb_frame_cache is not None
@@ -1728,6 +1734,7 @@ class AutoClicker:
                 added += 1
 
         matching = manifest.get("matching", {})
+        upgrade_resource_runtime_metadata(self.search_images, self.routine_tasks)
         upgrade_strict_runtime_metadata(self.search_images, self.routine_tasks)
         upgrade_prize_hunt_metadata(self.search_images, self.routine_tasks)
         upgrade_radar_runtime_metadata(self.search_images, self.routine_tasks)
@@ -2466,6 +2473,7 @@ class AutoClicker:
         self.routine_resource_retry_count = 0
         self.routine_radar_pending_marker_key = None
         self.routine_radar_confirmed_marker_keys = set()
+        self.routine_radar_in_progress_seen = False
         template_count = len(self.get_routine_templates(task, active_only=True))
         self.set_status_message(
             self.tr(
@@ -2627,18 +2635,47 @@ class AutoClicker:
                 require_settlement=routine_requires_settlement(task)
             )
 
+        radar_has_in_progress = bool(
+            task.get("id") == "radar" and self.routine_radar_in_progress_seen
+        )
         if task.get("id") == "prize_hunt" and task.get("settings", {}).get("repeat_until_stopped", True):
             self.routine_next_run[task["id"]] = now
+        elif task.get("id") == "radar":
+            self.routine_next_run[task["id"]] = next_run_after_radar_pass(
+                task,
+                now,
+                has_in_progress=radar_has_in_progress,
+            )
         else:
             self.routine_next_run[task["id"]] = next_run_after_finish(task, now)
-        self.set_status_message(
-            self.tr(
-                'routine_completed',
-                name=self.get_routine_task_name(task),
-                minutes=float(task.get("interval_minutes", 1.0)),
+        next_run_minutes = max(
+            1,
+            int(
+                (
+                    max(0.0, self.routine_next_run[task["id"]] - now)
+                    + 59.999
+                )
+                // 60.0
             ),
-            force=True,
         )
+        if radar_has_in_progress:
+            self.set_status_message(
+                f"Радар: быстрый проход завершён, задания с отрядами проверю через {next_run_minutes} мин",
+                force=True,
+            )
+        else:
+            self.set_status_message(
+                self.tr(
+                    'routine_completed',
+                    name=self.get_routine_task_name(task),
+                    minutes=(
+                        next_run_minutes
+                        if task.get("id") == "radar"
+                        else float(task.get("interval_minutes", 1.0))
+                    ),
+                ),
+                force=True,
+            )
         self.current_routine_index = (self.current_routine_index + 1) % len(self.routine_tasks)
         self.current_routine_task_id = None
         self.routine_current_had_action = False
@@ -2650,6 +2687,7 @@ class AutoClicker:
         self.routine_idle_guard_visible = False
         self.routine_idle_outside_since = 0.0
         self.routine_idle_recovery_attempted = False
+        self.routine_radar_in_progress_seen = False
 
     def _try_recover_current_routine_home(self, task):
         self.routine_home_recovery_attempted = True
@@ -2747,13 +2785,14 @@ class AutoClicker:
         return True
 
     def _confirm_pending_radar_marker(self):
+        self.routine_radar_in_progress_seen = True
         marker_key = self.routine_radar_pending_marker_key
         if marker_key is None:
             return
         self.routine_radar_confirmed_marker_keys.add(marker_key)
         if self.anti_loop_enabled:
             self.blocked_coords[marker_key] = time.time() + 900.0
-        logger.info("Radar marker confirmed by deployment: %s", marker_key)
+        logger.info("Radar marker deferred for the current pass: %s", marker_key)
         self.routine_radar_pending_marker_key = None
 
     def _template_uid_is_visible(self, uid):
@@ -2778,7 +2817,12 @@ class AutoClicker:
         )
         if coord_key in self.blocked_coords:
             return False
-        if marker and coord_key in self.routine_radar_confirmed_marker_keys:
+        if marker and radar_marker_was_confirmed(
+            coord_key[0],
+            coord_key[1],
+            coord_key[2],
+            self.routine_radar_confirmed_marker_keys,
+        ):
             return False
 
         try:
@@ -3324,6 +3368,9 @@ class AutoClicker:
 
                 action_occurred = False
                 refresh_after_action = False
+                if self.uses_adb:
+                    with self._adb_capture_lock:
+                        self._adb_iteration_frame = self._capture_adb_frame(force=True)
                 iteration_plan = build_group_iteration_plan(
                     active_images,
                     self.group_execution,
@@ -3346,6 +3393,11 @@ class AutoClicker:
                             if not self.groups[img_config["group"]]:
                                 continue
                         if img_config.get("guard_only"):
+                            continue
+                        if (
+                            img_config.get("requires_settlement_screen")
+                            and not self._is_settlement_screen_visible()
+                        ):
                             continue
 
                         required_setting_key = str(img_config.get("required_setting_key") or "")
@@ -3445,6 +3497,22 @@ class AutoClicker:
                                 if not is_valid:
                                     self.set_status_message(
                                         f"{reject_reason} отклонил: {img_config['description']}"
+                                    )
+                                    continue
+
+                                if (
+                                    current_routine_task.get("id") == "radar"
+                                    and img_config.get("prevents_idle_completion")
+                                    and radar_marker_was_confirmed(
+                                        img_config.get("uid") or img_config.get("path"),
+                                        location.x,
+                                        location.y,
+                                        self.routine_radar_confirmed_marker_keys,
+                                    )
+                                ):
+                                    logger.debug(
+                                        "Пропуск отложенного значка радара: %s",
+                                        img_config.get("description"),
                                     )
                                     continue
 
@@ -3833,6 +3901,28 @@ class AutoClicker:
 
         if self._resource_result_level_rejected(img_config):
             return False
+
+        if action == "radar_defer_in_progress":
+            self.routine_radar_in_progress_seen = True
+            self._confirm_pending_radar_marker()
+            try:
+                if self.uses_adb:
+                    self.adb_client.keyevent(4)
+                else:
+                    pyautogui.press("escape")
+            except Exception:
+                logger.exception("Не удалось закрыть выполняющееся задание радара")
+                return False
+            self._invalidate_capture()
+            self.routine_completed_steps.clear()
+            self.routine_last_action_time = time.time()
+            img_config["last_used"] = self.routine_last_action_time
+            self.set_status_message(
+                "Радар: задание уже выполняется, проверяю следующую карточку",
+                force=True,
+            )
+            self._interruptible_sleep(img_config.get("delay", 0.5))
+            return True
 
         if action == "select_training_queue":
             if self.uses_adb:

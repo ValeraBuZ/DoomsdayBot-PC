@@ -34,6 +34,30 @@ class AdbClientTests(unittest.TestCase):
         self.assertTrue(client.is_available())
         self.assertEqual(calls[0][0], ["adb.exe", "-s", "emulator-5556", "get-state"])
 
+    def test_responsive_connection_requires_working_shell(self):
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append((command, kwargs))
+            if command[-1] == "get-state":
+                return FakeResult(stdout="device\n")
+            return FakeResult(stdout="buzzbot_ready\n")
+
+        client = self.make_client(runner)
+        self.assertTrue(client.is_responsive())
+        self.assertEqual(
+            calls[1][0],
+            ["adb.exe", "-s", "emulator-5556", "shell", "echo", "buzzbot_ready"],
+        )
+
+    def test_responsive_connection_rejects_visible_but_stalled_device(self):
+        def runner(command, **_kwargs):
+            if command[-1] == "get-state":
+                return FakeResult(stdout="device\n")
+            raise subprocess.TimeoutExpired(command, 4)
+
+        self.assertFalse(self.make_client(runner).is_responsive())
+
     def test_screenshot_is_decoded_to_bgr(self):
         source = np.zeros((4, 6, 3), dtype=np.uint8)
         source[:, :] = (12, 34, 56)

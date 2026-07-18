@@ -52,6 +52,7 @@ RADAR_STEP_PRIORITIES = {
     "radar_screen_guard": 1,
     "card_guard": 1,
     "forward_guard": 1,
+    "open_radar": 2,
     "collect_completed": 3,
     "wait_in_progress": 5,
     "open_any_task": 10,
@@ -94,7 +95,6 @@ RADAR_STEP_PRIORITIES = {
     "task_skull_current": 84,
     "task_special_current": 85,
     "task_fist_current": 86,
-    "open_radar": 90,
 }
 
 
@@ -140,6 +140,7 @@ DEFAULT_ROUTINE_TASKS = (
         "timeout_seconds": 8.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
+        "empty_home_is_success": True,
         "settings": {},
     },
     {
@@ -222,6 +223,7 @@ DEFAULT_ROUTINE_TASKS = (
         "timeout_seconds": 30.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
+        "empty_home_is_success": True,
         "settings": {},
     },
     {
@@ -266,6 +268,7 @@ DEFAULT_ROUTINE_TASKS = (
         "settings": {
             "max_tasks": 0,
             "fixed_utc_hours": [0, 12],
+            "in_progress_retry_minutes": 5,
         },
     },
     {
@@ -761,6 +764,10 @@ def upgrade_resource_runtime_metadata(images, tasks):
             runtime_step = "world_search" if step_id == "region" else step_id
             image["runtime_step"] = runtime_step
             image["allow_runtime_resume"] = True
+            # Every free march reuses the same resource buttons. Keep anti-loop
+            # protection within one pass without blocking the next scheduled pass.
+            image["allow_repeat"] = True
+            image["block_seconds"] = 2.0
             image["implied_runtime_steps"] = list(dict.fromkeys(prior_runtime_steps))
             image.pop("requires_runtime_steps", None)
             if step_id not in {"region", "world_search"} and previous_step:
@@ -1178,6 +1185,11 @@ def upgrade_radar_runtime_metadata(images, tasks):
         if image is None:
             continue
         image["routine_priority"] = priority
+        if step_id == "open_radar":
+            image["requires_settlement_screen"] = True
+        if step_id == "wait_in_progress":
+            image["action"] = "radar_defer_in_progress"
+            image["delay"] = 0.5
         if step_id == "march":
             image["confirm_disappears"] = True
             image["confirms_radar_marker"] = True
@@ -1226,6 +1238,7 @@ def upgrade_radar_runtime_metadata(images, tasks):
                 uuid.uuid5(PROFILE_NAMESPACE, "radar:radar_screen_guard")
             )
             task.setdefault("settings", {})["fixed_utc_hours"] = [0, 12]
+            task["settings"].setdefault("in_progress_retry_minutes", 5)
     return upgraded
 
 
@@ -1290,7 +1303,7 @@ def _normalize_task(source, default):
         "complete_when_idle": bool(
             source.get("complete_when_idle", default.get("complete_when_idle", False))
         ),
-        "empty_home_is_success": bool(
+        "empty_home_is_success": task_id in {"fence_survivors", "vip_rewards"} or bool(
             source.get(
                 "empty_home_is_success",
                 default.get("empty_home_is_success", False),
@@ -1402,6 +1415,18 @@ def next_run_after_finish(task, now):
         return next_fixed_utc_run(now, fixed_utc_hours)
     interval_seconds = float(task.get("interval_minutes", 1.0)) * 60.0
     return float(now) + max(6.0, interval_seconds)
+
+
+def next_run_after_radar_pass(task, now, has_in_progress=False):
+    """Retry deferred radar marches soon, otherwise wait for the fixed reset."""
+    if task.get("id") == "radar" and has_in_progress:
+        retry_minutes = _positive_float(
+            task.get("settings", {}).get("in_progress_retry_minutes"),
+            5.0,
+            1.0,
+        )
+        return float(now) + retry_minutes * 60.0
+    return next_run_after_finish(task, now)
 
 
 def next_fixed_utc_run(now, hours):

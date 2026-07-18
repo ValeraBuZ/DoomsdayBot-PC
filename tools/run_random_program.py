@@ -47,8 +47,10 @@ MARCH_TASKS = (
     "zombie_hunt",
     "collective_mind",
 )
+ZOMBIE_TEST_ACCOUNT = "Phoenix675"
 TASK_FAILURE_PATTERNS = (
     r"Routine ([a-z0-9_]+) timed out without actions",
+    r"Routine ([a-z0-9_]+) is temporarily unavailable \((?!max_queue_checks\)|max_lab_checks\))",
 )
 BUSY_SQUAD_PATTERNS = (
     r"Routine ([a-z0-9_]+) reached the squad screen while every squad is busy",
@@ -61,10 +63,16 @@ def _write_json(path, payload):
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _random_program(rng, count):
+def _march_tasks_for_account(account_name):
+    if str(account_name or "").strip().casefold() == ZOMBIE_TEST_ACCOUNT.casefold():
+        return MARCH_TASKS
+    return tuple(task_id for task_id in MARCH_TASKS if task_id != "zombie_hunt")
+
+
+def _random_program(rng, count, march_tasks=MARCH_TASKS):
     count = max(2, min(int(count), len(NON_MARCH_TASKS) + 1))
     selected = rng.sample(NON_MARCH_TASKS, count - 1)
-    selected.append(rng.choice(MARCH_TASKS))
+    selected.append(rng.choice(tuple(march_tasks)))
     rng.shuffle(selected)
     return selected
 
@@ -143,6 +151,7 @@ def run_program(instance, selected_ids, seed, output_dir, timeout_seconds, settl
         "settings": {},
         "visited_tasks": [],
         "task_screenshots": [],
+        "step_screenshots": [],
         "actions_by_group": {},
         "unexpected_groups": [],
         "missing_tasks": [],
@@ -152,6 +161,16 @@ def run_program(instance, selected_ids, seed, output_dir, timeout_seconds, settl
         "error": "",
         "started_at": datetime.now().isoformat(timespec="seconds"),
     }
+    if (
+        "zombie_hunt" in selected_ids
+        and "zombie_hunt" not in _march_tasks_for_account(instance.name)
+    ):
+        result["error"] = (
+            f"Zombie hunt live tests are restricted to {ZOMBIE_TEST_ACCOUNT}; "
+            f"selected account: {instance.name}"
+        )
+        result["finished_at"] = datetime.now().isoformat(timespec="seconds")
+        return result
     ldconsole = find_ldconsole()
     if ldconsole is None:
         result["error"] = "LDPlayer console not found"
@@ -198,6 +217,7 @@ def run_program(instance, selected_ids, seed, output_dir, timeout_seconds, settl
             raise RuntimeError(f"Bot did not start: {bot.status_message}")
 
         current_task = None
+        current_steps = ()
         deadline = time.time() + float(timeout_seconds)
         while time.time() < deadline and bot.is_running:
             observed = bot.current_routine_task_id
@@ -207,6 +227,7 @@ def run_program(instance, selected_ids, seed, output_dir, timeout_seconds, settl
                     result["task_screenshots"].append(screenshot)
             if observed and observed != current_task:
                 current_task = observed
+                current_steps = ()
                 if observed not in result["visited_tasks"]:
                     result["visited_tasks"].append(observed)
                 screenshot = f"{len(result['task_screenshots']) + 1:02d}_{observed}.png"
@@ -214,6 +235,19 @@ def run_program(instance, selected_ids, seed, output_dir, timeout_seconds, settl
                     result["task_screenshots"].append(screenshot)
             elif observed is None:
                 current_task = None
+                current_steps = ()
+
+            observed_steps = tuple(sorted(bot.routine_completed_steps))
+            if current_task and observed_steps and observed_steps != current_steps:
+                current_steps = observed_steps
+                step_label = "-".join(observed_steps)
+                step_label = re.sub(r"[^a-zA-Z0-9_-]+", "_", step_label)[:80]
+                screenshot = (
+                    f"step_{len(result['step_screenshots']) + 1:02d}_"
+                    f"{current_task}_{step_label}.png"
+                )
+                if _capture(client, output_dir / screenshot):
+                    result["step_screenshots"].append(screenshot)
 
             processed = {
                 task_id
@@ -285,7 +319,11 @@ def main():
         raise SystemExit(f"LDPlayer instance not found: {args.index}")
 
     seed = args.seed if args.seed is not None else secrets.randbelow(2**31)
-    selected = _random_program(random.Random(seed), args.count)
+    selected = _random_program(
+        random.Random(seed),
+        args.count,
+        _march_tasks_for_account(instance.name),
+    )
     output = args.output or PROJECT_ROOT / "test_runs" / f"random_{datetime.now():%Y%m%d_%H%M%S}"
     output.mkdir(parents=True, exist_ok=True)
     _write_json(output / "program.json", {"seed": seed, "selected_tasks": selected})

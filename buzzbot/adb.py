@@ -78,6 +78,17 @@ class AdbClient:
             return False
         return str(output).strip() == "device"
 
+    def is_responsive(self):
+        """Return True only when the device accepts real shell commands."""
+        if not self.is_available():
+            return False
+        marker = "buzzbot_ready"
+        try:
+            output = self._run(["shell", "echo", marker], timeout=4)
+        except AdbError:
+            return False
+        return marker in str(output or "")
+
     def screenshot_bgr(self):
         payload = self._run(["exec-out", "screencap", "-p"], binary=True, timeout=12)
         if not payload:
