@@ -1231,7 +1231,11 @@ def build_compact_ui(root, bot):
         now = time.time()
         enabled_tasks = [task for task in bot.routine_tasks if task.get("enabled")]
         selected_var.set(f"{len(enabled_tasks)} задач")
-        busy_marches = sum(deadline > now for deadline in bot.routine_march_deadlines)
+        busy_marches = getattr(
+            bot,
+            "routine_display_active_marches",
+            sum(deadline > now for deadline in bot.routine_march_deadlines),
+        )
         march_usage_var.set(f"{busy_marches} / {bot.routine_max_marches}")
 
         current_task = bot.get_routine_task(bot.current_routine_task_id) if bot.current_routine_task_id else None

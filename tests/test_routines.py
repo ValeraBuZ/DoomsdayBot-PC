@@ -19,6 +19,7 @@ from buzzbot.routines import (
     pick_due_task_index,
     prize_hunt_branch_allows_image,
     radar_marker_was_confirmed,
+    reconcile_march_deadlines,
     resource_search_retry_due,
     routine_home_recovery_due,
     routine_idle_screen_recovery_due,
@@ -242,12 +243,16 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertEqual(task["settings"]["max_donations"], 100)
         self.assertEqual(task["settings"]["max_project_checks"], 5)
         self.assertEqual(task["interval_minutes"], 20.0)
-        self.assertEqual(task["timeout_seconds"], 6.0)
+        self.assertEqual(task["timeout_seconds"], 30.0)
+        self.assertEqual(task["completion_runtime_step"], "all_projects_checked")
 
     def test_repeatable_claims_guard_task_closing(self):
         namespace = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
         donate_uid = str(uuid.uuid5(namespace, "alliance_donations:donate_resources"))
         donation_close_uid = str(uuid.uuid5(namespace, "alliance_donations:close_project"))
+        donation_project_uid = str(
+            uuid.uuid5(namespace, "alliance_donations:select_project_research")
+        )
         vip_claim_uid = str(uuid.uuid5(namespace, "vip_rewards:claim_chest"))
         vip_dismiss_uid = str(uuid.uuid5(namespace, "vip_rewards:dismiss_info"))
         vip_receive_uid = str(uuid.uuid5(namespace, "vip_rewards:receive_free"))
@@ -255,6 +260,7 @@ class RoutineTaskTests(unittest.TestCase):
         images = [
             {"uid": donate_uid},
             {"uid": donation_close_uid},
+            {"uid": donation_project_uid, "confidence": 0.88, "orb_match_threshold": 10},
             {"uid": vip_claim_uid},
             {"uid": vip_dismiss_uid},
             {"uid": vip_receive_uid},
@@ -269,6 +275,8 @@ class RoutineTaskTests(unittest.TestCase):
 
         self.assertTrue(by_uid[donate_uid]["allow_repeat"])
         self.assertIn(donate_uid, by_uid[donation_close_uid]["skip_if_visible_uids"])
+        self.assertLessEqual(by_uid[donation_project_uid]["confidence"], 0.74)
+        self.assertEqual(by_uid[donation_project_uid]["orb_match_threshold"], 3)
         self.assertTrue(by_uid[vip_claim_uid]["allow_repeat"])
         self.assertTrue(by_uid[vip_dismiss_uid]["allow_repeat"])
         self.assertTrue(by_uid[vip_receive_uid]["allow_repeat"])
@@ -278,6 +286,9 @@ class RoutineTaskTests(unittest.TestCase):
             [vip_claim_uid, vip_dismiss_uid, vip_receive_uid],
         )
         self.assertEqual(donation_task["settings"]["max_donations"], 100)
+        self.assertEqual(donation_task["settings"]["max_project_checks"], 5)
+        self.assertGreaterEqual(donation_task["timeout_seconds"], 30.0)
+        self.assertEqual(donation_task["completion_runtime_step"], "all_projects_checked")
 
     def test_next_run_uses_task_interval(self):
         task = {"interval_minutes": 2.5}
@@ -349,6 +360,17 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertEqual(effective_active_marches(4, 1, 5, 100.0, 220.0), 5)
         self.assertEqual(effective_active_marches(0, 1, 1, 221.0, 220.0), 0)
         self.assertEqual(effective_active_marches(None, 2, 4, 100.0, 220.0), 2)
+
+    def test_visible_march_counter_removes_cancelled_local_reservation(self):
+        deadlines = [1000.0, 1100.0, 1200.0, 1300.0, 1400.0]
+        self.assertEqual(
+            reconcile_march_deadlines(deadlines, 4, 200.0, 190.0),
+            deadlines[:4],
+        )
+        self.assertEqual(
+            reconcile_march_deadlines(deadlines, 4, 180.0, 190.0),
+            deadlines,
+        )
 
     def test_missing_march_button_defers_after_squad_screen_grace(self):
         task = {"uses_march": True}
@@ -469,6 +491,7 @@ class RoutineTaskTests(unittest.TestCase):
             *({"uid": uid} for uid in hunt_uids.values()),
         ]
         tasks = [
+            {"id": "heal", "timeout_seconds": 12.0},
             {"id": "train_infantry", "timeout_seconds": 12.0},
             {"id": "zombie_hunt", "timeout_seconds": 12.0},
         ]
@@ -480,7 +503,8 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertTrue(by_uid[training_uids["queue"]]["dynamic_building_search"])
         self.assertEqual(by_uid[training_uids["queue"]]["limit_key"], "max_queue_checks")
         self.assertTrue(by_uid[training_uids["queue"]]["defer_when_limit_reached"])
-        self.assertEqual(tasks[0]["settings"]["max_queue_checks"], 4)
+        self.assertTrue(tasks[0]["empty_home_is_success"])
+        self.assertEqual(tasks[1]["settings"]["max_queue_checks"], 4)
         self.assertEqual(
             by_uid[training_uids["train"]]["requires_runtime_steps"],
             ["building"],

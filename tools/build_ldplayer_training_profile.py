@@ -506,7 +506,7 @@ DAILY_TASK_STEPS = {
             "select_project_construction",
             "Проверить проект: строительство убежища",
             "alliance_technology_now.png",
-            (628, 137, 873, 246),
+            (630, 137, 720, 232),
             (0, 0),
             False,
         ),
@@ -514,7 +514,7 @@ DAILY_TASK_STEPS = {
             "select_project_research",
             "Проверить проект: скорость исследований",
             "alliance_technology_now.png",
-            (628, 270, 871, 378),
+            (630, 270, 720, 365),
             (0, 0),
             False,
         ),
@@ -522,7 +522,7 @@ DAILY_TASK_STEPS = {
             "select_project_zombies",
             "Проверить проект: охота на зомби",
             "alliance_technology_now.png",
-            (628, 407, 873, 515),
+            (630, 407, 720, 502),
             (0, 0),
             False,
         ),
@@ -530,7 +530,7 @@ DAILY_TASK_STEPS = {
             "select_project_elite",
             "Проверить проект: план элиты",
             "alliance_technology_now.png",
-            (628, 542, 873, 651),
+            (630, 542, 720, 637),
             (0, 0),
             False,
         ),
@@ -538,7 +538,7 @@ DAILY_TASK_STEPS = {
             "select_project_fire_water",
             "Проверить проект: сквозь огонь и воду",
             "alliance_technology_now.png",
-            (244, 478, 492, 586),
+            (248, 478, 338, 573),
             (0, 0),
             False,
         ),
@@ -942,9 +942,9 @@ DAILY_TASK_STEPS = {
             "open_wounded",
             "Открыть госпиталь с ранеными",
             "base_pan_north.png",
-            (1053, 119, 1113, 183),
+            (1058, 134, 1108, 179),
             (0, 0),
-            False,
+            True,
         ),
         (
             "start_healing",
@@ -1117,7 +1117,7 @@ def build_profile(destination):
     manifest = {
         "format": "doomsday-training-profile",
         "format_version": 1,
-        "app_version": "3.1.15",
+        "app_version": "3.2.1",
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "source_screen": {"width": 1280, "height": 720},
         "routine_tasks": tasks,
@@ -1297,6 +1297,11 @@ def build_profile(destination):
                 if step_id == "wait_in_progress":
                     configured_image["action"] = "wait"
                     configured_image["delay"] = 1.0
+                if step_id == "attack_zombie":
+                    configured_image["action"] = "zombie_attack"
+            if task_id == "heal" and step_id == "open_wounded":
+                configured_image["confidence"] = 0.74
+                configured_image["orb_match_threshold"] = 3
             if task_id == "fence_survivors":
                 configured_image["allow_repeat"] = True
                 configured_image["block_seconds"] = 2.0
@@ -1799,6 +1804,8 @@ def build_profile(destination):
         configured_image["orb_match_threshold"] = 3
         if step_id == "search":
             configured_image["action"] = "zombie_search"
+        if step_id == "attack":
+            configured_image["action"] = "zombie_attack"
         if step_id == "world_search":
             configured_image["confidence"] = 0.82
         if step_id == "zombie_icon":

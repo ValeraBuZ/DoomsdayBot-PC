@@ -50,6 +50,31 @@ class ProfileBundleTests(unittest.TestCase):
         self.assertTrue(images[no_result_uid]["observer_only"])
         self.assertEqual(images[search_uid]["no_result_template_uid"], no_result_uid)
 
+    def test_reported_routines_have_safe_runtime_metadata(self):
+        profile_path = Path(__file__).resolve().parents[1] / "profiles" / "BuZzbot_PC_1280x720.zip"
+        namespace = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
+        with zipfile.ZipFile(profile_path) as archive:
+            manifest = json.loads(archive.read("profile.json"))
+
+        self.assertEqual(manifest["app_version"], "3.2.1")
+        tasks = {task["id"]: task for task in manifest["routine_tasks"]}
+        images = {image["uid"]: image for image in manifest["images"]}
+        donation = tasks["alliance_donations"]
+        self.assertGreaterEqual(donation["timeout_seconds"], 30.0)
+        self.assertEqual(donation["completion_runtime_step"], "all_projects_checked")
+
+        project_uid = str(
+            uuid.uuid5(namespace, "alliance_donations:select_project_research")
+        )
+        hospital_uid = str(uuid.uuid5(namespace, "heal:open_wounded"))
+        zombie_attack_uid = str(uuid.uuid5(namespace, "zombie_hunt:attack"))
+        radar_attack_uid = str(uuid.uuid5(namespace, "radar:attack_zombie"))
+        self.assertLessEqual(images[project_uid]["confidence"], 0.74)
+        self.assertTrue(images[hospital_uid]["grayscale"])
+        self.assertLessEqual(images[hospital_uid]["confidence"], 0.74)
+        self.assertEqual(images[zombie_attack_uid]["action"], "zombie_attack")
+        self.assertEqual(images[radar_attack_uid]["action"], "zombie_attack")
+
 
 if __name__ == "__main__":
     unittest.main()

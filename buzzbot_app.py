@@ -41,8 +41,16 @@ from buzzbot.ldplayer import (
     reboot_instance,
 )
 from buzzbot.logging_utils import configure_logging, install_exception_logging
-from buzzbot.matching import TemplateCache
+from buzzbot.matching import (
+    TemplateCache,
+    detect_radar_card_action_target,
+    detect_radar_notification_targets,
+    detect_radar_world_action_target,
+    healing_auto_fill_is_checked,
+    zombie_camp_checkbox_is_checked,
+)
 from buzzbot.routines import (
+    PROFILE_NAMESPACE,
     completed_runtime_steps_for_image,
     default_routine_tasks,
     effective_active_marches,
@@ -57,6 +65,7 @@ from buzzbot.routines import (
     pick_due_task_index,
     prize_hunt_branch_allows_image,
     radar_marker_was_confirmed,
+    reconcile_march_deadlines,
     resource_search_retry_due,
     routine_home_recovery_due,
     routine_idle_screen_recovery_due,
@@ -74,7 +83,7 @@ from buzzbot.state import BotState, compute_runtime_seconds
 from buzzbot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.2.0"
+APP_VERSION = "3.2.1"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -87,6 +96,7 @@ GAME_PACKAGE = "com.igg.android.doomsdaylastsurvivors"
 GAME_LOGIN_MINIMUM_SECONDS = 50.0
 GAME_LOGIN_STABLE_SECONDS = 12.0
 WORLD_SEARCH_TASK_IDS = {"food", "wood", "metal", "oil", "zombie_hunt", "collective_mind"}
+MARCH_OBSERVER_GRACE_SECONDS = 15.0
 
 logger = configure_logging(APP_DIR / "bot.log")
 
@@ -595,6 +605,7 @@ class AutoClicker:
         self.routine_deployment_blocked_until = 0.0
         self.routine_confirmed_march_floor = 0
         self.routine_march_observer_grace_until = 0.0
+        self.routine_display_active_marches = 0
         self.routine_next_run = {}
         self.current_routine_index = 0
         self.current_routine_task_id = None
@@ -2252,16 +2263,31 @@ class AutoClicker:
             self.routine_march_deadlines = active[:self.routine_max_marches]
             self.save_config()
         observed = self._detect_observed_marches()
+        reconciled = reconcile_march_deadlines(
+            self.routine_march_deadlines,
+            observed,
+            now,
+            self.routine_march_observer_grace_until,
+        )
+        if reconciled != self.routine_march_deadlines:
+            logger.info(
+                "Observed march counter reconciled local reservations: %s -> %s",
+                len(self.routine_march_deadlines),
+                len(reconciled),
+            )
+            self.routine_march_deadlines = reconciled
+            self.save_config()
         active_count = effective_active_marches(
             observed,
-            len(self.routine_march_deadlines),
+            len(reconciled),
             self.routine_confirmed_march_floor,
             now,
             self.routine_march_observer_grace_until,
         )
         if now >= self.routine_march_observer_grace_until:
             self.routine_confirmed_march_floor = 0
-        return min(self.routine_max_marches, active_count)
+        self.routine_display_active_marches = min(self.routine_max_marches, active_count)
+        return self.routine_display_active_marches
 
     def _detect_observed_marches(self):
         observers = [
@@ -2310,6 +2336,7 @@ class AutoClicker:
         self.routine_march_deadlines = []
         self.routine_confirmed_march_floor = 0
         self.routine_march_observer_grace_until = 0.0
+        self.routine_display_active_marches = 0
         self.save_config()
         self.set_status_message(
             self.tr('routine_marches', active=0, maximum=self.routine_max_marches),
@@ -2327,13 +2354,15 @@ class AutoClicker:
             self.routine_max_marches,
             max(len(self.routine_march_deadlines), active_count + 1),
         )
+        self.routine_display_active_marches = self.routine_confirmed_march_floor
         self.routine_march_observer_grace_until = max(
             self.routine_march_observer_grace_until,
-            now + 120.0,
+            now + MARCH_OBSERVER_GRACE_SECONDS,
         )
         logger.info(
-            "Confirmed march reserved: active=%s, observer grace=120 sec",
+            "Confirmed march reserved: active=%s, observer grace=%.0f sec",
             self.routine_confirmed_march_floor,
+            MARCH_OBSERVER_GRACE_SECONDS,
         )
         self.save_config()
         return True
@@ -2576,16 +2605,6 @@ class AutoClicker:
             "collective_mind",
         }:
             self._interruptible_sleep(1.5)
-            if task.get("id") == "zombie_hunt" and completion_clicked:
-                try:
-                    if self.uses_adb:
-                        self.adb_client.keyevent(4)
-                    else:
-                        pyautogui.press("escape")
-                    self._invalidate_capture()
-                    self._interruptible_sleep(0.8)
-                except Exception:
-                    logger.exception("Не удалось закрыть экран развёртывания после охоты")
             self._return_to_main_screen(max_back_steps=3)
 
         if task.get("id") in {
@@ -2736,6 +2755,92 @@ class AutoClicker:
             self.blocked_coords[marker_key] = time.time() + 900.0
         logger.info("Radar marker confirmed by deployment: %s", marker_key)
         self.routine_radar_pending_marker_key = None
+
+    def _template_uid_is_visible(self, uid):
+        image = next(
+            (item for item in self.search_images if str(item.get("uid") or "") == str(uid)),
+            None,
+        )
+        if image is None:
+            return False
+        location, bbox, _confidence = self._locate_image(image)
+        if location is None or bbox is None:
+            return False
+        is_valid, _reason = self._validate_detected_match(image, bbox)
+        return is_valid
+
+    def _tap_radar_fallback(self, target, label, runtime_step, marker=False):
+        target_x, target_y = map(int, target)
+        coord_key = (
+            "radar_dynamic" if marker else f"radar_dynamic_{runtime_step}",
+            target_x,
+            target_y,
+        )
+        if coord_key in self.blocked_coords:
+            return False
+        if marker and coord_key in self.routine_radar_confirmed_marker_keys:
+            return False
+
+        try:
+            if self.uses_adb:
+                self.adb_client.tap(target_x, target_y)
+            else:
+                pyautogui.click(target_x, target_y)
+        except Exception:
+            logger.exception("Radar fallback click failed: %s", label)
+            return False
+
+        self._invalidate_capture()
+        self.blocked_coords[coord_key] = time.time() + (8.0 if marker else 5.0)
+        if marker:
+            self.routine_radar_pending_marker_key = coord_key
+        self.routine_completed_steps.add(runtime_step)
+        self.routine_current_had_action = True
+        self.routine_last_action_time = time.time()
+        self.routine_idle_confirmation_count = 0
+        self.click_count += 1
+        self.set_status_message(f"Радар: {label} @ ({target_x}, {target_y})", force=True)
+        logger.info("Radar fallback: %s @ (%s, %s)", label, target_x, target_y)
+        self._interruptible_sleep(1.0)
+        return True
+
+    def _try_radar_visual_fallback(self, task):
+        if task.get("id") != "radar":
+            return False
+        try:
+            frame, _origin = self._capture_screen_bgr(force=True)
+        except Exception:
+            logger.exception("Radar fallback could not capture the screen")
+            return False
+
+        card_target = detect_radar_card_action_target(frame)
+        if card_target and self._tap_radar_fallback(
+            card_target,
+            "нажата доступная кнопка карточки",
+            "radar_forward",
+        ):
+            return True
+
+        radar_guard_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "radar:radar_screen_guard"))
+        if self._template_uid_is_visible(radar_guard_uid):
+            for marker_target in detect_radar_notification_targets(frame):
+                if self._tap_radar_fallback(
+                    marker_target,
+                    "выбрано новое задание по красной метке",
+                    "radar_marker",
+                    marker=True,
+                ):
+                    return True
+
+        if "radar_forward" in self.routine_completed_steps:
+            action_target = detect_radar_world_action_target(frame)
+            if action_target and self._tap_radar_fallback(
+                action_target,
+                "нажата доступная кнопка задания",
+                "radar_action",
+            ):
+                return True
+        return False
 
     def _defer_current_routine_no_action(self, now=None):
         now = time.time() if now is None else float(now)
@@ -3480,6 +3585,14 @@ class AutoClicker:
                         )
                         self._interruptible_sleep(group_plan["delay_after"])
 
+                if (
+                    self.routine_mode
+                    and current_routine_task.get("id") == "radar"
+                    and not action_occurred
+                    and self._try_radar_visual_fallback(current_routine_task)
+                ):
+                    continue
+
                 if self.routine_mode:
                     if refresh_after_action or self.current_routine_task_id is None:
                         continue
@@ -3981,34 +4094,36 @@ class AutoClicker:
 
         if action == "heal_troops":
             troop_count = max(1, int(self._current_task_settings().get("troop_count", 10000)))
-            # The hospital opens with auto-fill enabled. This is exact when all
-            # wounded fit in the configured batch and safely caps larger queues.
-            if troop_count < 10000:
-                quota = max(1, (troop_count + 4) // 5)
-                frame, _origin = self._capture_screen_bgr(force=True)
-                scale_x = frame.shape[1] / 1280.0
-                scale_y = frame.shape[0] / 720.0
-                auto_x, auto_y = int(810 * scale_x), int(678 * scale_y)
-                field_x = int(1085 * scale_x)
-                ok_x, ok_y = int(1198 * scale_x), int(669 * scale_y)
-                row_positions = [173, 263, 353, 443]
-                if self.uses_adb:
+            frame, _origin = self._capture_screen_bgr(force=True)
+            scale_x = frame.shape[1] / 1280.0
+            scale_y = frame.shape[0] / 720.0
+            auto_x, auto_y = int(810 * scale_x), int(678 * scale_y)
+            field_x = int(1085 * scale_x)
+            ok_x, ok_y = int(1198 * scale_x), int(669 * scale_y)
+            row_positions = [173, 263, 353, 443]
+            base_quota, extra = divmod(troop_count, len(row_positions))
+            row_quotas = [base_quota + (1 if index < extra else 0) for index in range(len(row_positions))]
+            if self.uses_adb:
+                if healing_auto_fill_is_checked(frame):
                     self.adb_client.tap(auto_x, auto_y)
-                    for row_y in row_positions:
-                        self.adb_client.tap(field_x, int(row_y * scale_y))
-                        for _ in range(8):
-                            self.adb_client.keyevent(67)
-                        self.adb_client.input_text(str(quota))
-                        self.adb_client.tap(ok_x, ok_y)
-                        time.sleep(0.15)
-                else:
+                    self._interruptible_sleep(0.2)
+                for row_y, quota in zip(row_positions, row_quotas):
+                    self.adb_client.tap(field_x, int(row_y * scale_y))
+                    for _ in range(12):
+                        self.adb_client.keyevent(67)
+                    self.adb_client.input_text(str(quota))
+                    self.adb_client.tap(ok_x, ok_y)
+                    time.sleep(0.15)
+            else:
+                if healing_auto_fill_is_checked(frame):
                     pyautogui.click(auto_x, auto_y)
-                    for row_y in row_positions:
-                        pyautogui.click(field_x, int(row_y * scale_y))
-                        pyautogui.hotkey("ctrl", "a")
-                        pyautogui.write(str(quota))
-                        pyautogui.press("enter")
-                        time.sleep(0.15)
+                    self._interruptible_sleep(0.2)
+                for row_y, quota in zip(row_positions, row_quotas):
+                    pyautogui.click(field_x, int(row_y * scale_y))
+                    pyautogui.hotkey("ctrl", "a")
+                    pyautogui.write(str(quota))
+                    pyautogui.press("enter")
+                    time.sleep(0.15)
             if self.uses_adb:
                 self.adb_client.tap(int(round(target_x)), int(round(target_y)))
             else:
@@ -4165,6 +4280,23 @@ class AutoClicker:
             self.set_status_message(img_config.get("description", "Прокрутка списка"), force=True)
             self._interruptible_sleep(img_config.get("delay", self.sleep_found))
             return
+
+        if action == "zombie_attack":
+            frame, _origin = self._capture_screen_bgr(force=True)
+            if zombie_camp_checkbox_is_checked(frame):
+                camp_x = int(round(820 * frame.shape[1] / 1280.0))
+                camp_y = int(round(518 * frame.shape[0] / 720.0))
+                self.set_status_message(
+                    "Охота на зомби: отключаю разбивку лагеря после атаки",
+                    force=True,
+                )
+                if self.uses_adb:
+                    self.adb_client.tap(camp_x, camp_y)
+                else:
+                    pyautogui.click(camp_x, camp_y)
+                self._invalidate_capture()
+                self._interruptible_sleep(0.35)
+            action = "click"
 
         if self.uses_adb:
             current_x = int(round(target_x))

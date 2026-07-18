@@ -115,7 +115,7 @@ DEFAULT_ROUTINE_TASKS = (
     },
     {
         "id": "alliance_help",
-        "name": "Помощь альянсу",
+        "name": "Помощь другим игрокам",
         "group": "Помощь альянсу",
         "category": "daily",
         "enabled": False,
@@ -234,9 +234,12 @@ DEFAULT_ROUTINE_TASKS = (
         "priority": 25,
         # One spent attempt is restored by the game roughly every 20 minutes.
         "interval_minutes": 20.0,
-        "timeout_seconds": 6.0,
+        "timeout_seconds": 30.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
+        # Completion is driven by the project-check limit. This sentinel prevents
+        # merely opening the technology tree from being treated as success.
+        "completion_runtime_step": "all_projects_checked",
         "settings": {
             "max_donations": 100,
             "max_project_checks": 5,
@@ -311,6 +314,7 @@ DEFAULT_ROUTINE_TASKS = (
         "timeout_seconds": 12.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
+        "empty_home_is_success": True,
         "settings": {
             "troop_count": 10000,
             "collect_finished": True,
@@ -685,6 +689,17 @@ def effective_active_marches(observed, estimated, confirmed_floor, now, grace_un
     return observed
 
 
+def reconcile_march_deadlines(deadlines, observed, now, grace_until):
+    """Drop stale local reservations after the visible game counter disproves them."""
+    active = [float(deadline) for deadline in deadlines if float(deadline) > float(now)]
+    if observed is None or float(now) < float(grace_until):
+        return active
+    observed = max(0, int(observed))
+    if observed >= len(active):
+        return active
+    return active[:observed]
+
+
 def no_available_squad_wait_exceeded(task, completed_steps, idle_seconds, grace_seconds=8.0):
     """Detect a squad screen that never exposes the final march button."""
     completed = {str(step) for step in completed_steps}
@@ -808,6 +823,22 @@ def upgrade_repeatable_claim_metadata(images, tasks):
     alliance_close_uid = str(
         uuid.uuid5(PROFILE_NAMESPACE, "alliance_donations:close_project")
     )
+    alliance_open_uid = str(
+        uuid.uuid5(PROFILE_NAMESPACE, "alliance_donations:open_alliance")
+    )
+    alliance_technology_uid = str(
+        uuid.uuid5(PROFILE_NAMESPACE, "alliance_donations:open_technology")
+    )
+    alliance_project_uids = [
+        str(uuid.uuid5(PROFILE_NAMESPACE, f"alliance_donations:{step_id}"))
+        for step_id in (
+            "select_project_construction",
+            "select_project_research",
+            "select_project_zombies",
+            "select_project_elite",
+            "select_project_fire_water",
+        )
+    ]
     vip_claim_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "vip_rewards:claim_chest"))
     vip_dismiss_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "vip_rewards:dismiss_info"))
     vip_receive_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "vip_rewards:receive_free"))
@@ -843,6 +874,31 @@ def upgrade_repeatable_claim_metadata(images, tasks):
         image["skip_if_visible_uids"] = list(dict.fromkeys([*existing, *guard_uids]))
         upgraded += 1
 
+    donation_priorities = {
+        alliance_open_uid: 5,
+        alliance_technology_uid: 10,
+        alliance_donate_uid: 30,
+        alliance_close_uid: 40,
+    }
+    donation_priorities.update(
+        {uid: 20 + index for index, uid in enumerate(alliance_project_uids)}
+    )
+    for uid, priority in donation_priorities.items():
+        image = images_by_uid.get(uid)
+        if image is None:
+            continue
+        image["routine_priority"] = priority
+        if uid in alliance_project_uids:
+            image["confidence"] = min(
+                0.74,
+                float(image.get("confidence", 0.88) or 0.88),
+            )
+            image["orb_match_threshold"] = min(
+                3,
+                int(image.get("orb_match_threshold", 3) or 3),
+            )
+        upgraded += 1
+
     for task in tasks:
         if task.get("id") == "alliance_donations":
             settings = task.setdefault("settings", {})
@@ -850,10 +906,15 @@ def upgrade_repeatable_claim_metadata(images, tasks):
                 100,
                 int(settings.get("max_donations", 0) or 0),
             )
-            task["timeout_seconds"] = min(
-                6.0,
-                float(task.get("timeout_seconds", 6.0) or 6.0),
+            settings["max_project_checks"] = max(
+                5,
+                int(settings.get("max_project_checks", 0) or 0),
             )
+            task["timeout_seconds"] = max(
+                30.0,
+                float(task.get("timeout_seconds", 30.0) or 30.0),
+            )
+            task["completion_runtime_step"] = "all_projects_checked"
         elif task.get("id") == "collective_mind":
             settings = task.setdefault("settings", {})
             level = int(settings.get("level", 6) or 6)
@@ -942,6 +1003,8 @@ def upgrade_strict_runtime_metadata(images, tasks):
                 20.0,
                 float(task.get("timeout_seconds", 0.0) or 0.0),
             )
+        if task.get("id") == "heal":
+            task["empty_home_is_success"] = True
         if str(task.get("id") or "").startswith("train_"):
             task.setdefault("settings", {}).setdefault("max_queue_checks", 4)
         if task.get("id") == "research":
@@ -1124,6 +1187,8 @@ def upgrade_radar_runtime_metadata(images, tasks):
         if image.get("limit_key") == "max_tasks":
             image.pop("limit_key", None)
         if step_id.startswith("task_"):
+            image["runtime_step"] = "radar_marker"
+            image["repeat_runtime_step"] = True
             image["prevents_idle_completion"] = True
             # Marker colors vary slightly between accounts. The red notification
             # dot plus the existing color/ORB checks still guards the click.
@@ -1136,6 +1201,19 @@ def upgrade_radar_runtime_metadata(images, tasks):
             # the final deployment button confirms a real radar march.
             image["allow_repeat"] = True
             image["block_seconds"] = 8.0
+        elif step_id in {"open_any_task", "open_supply", "open_car", "open_zombie"}:
+            image["runtime_step"] = "radar_forward"
+            image["repeat_runtime_step"] = True
+        elif step_id in {
+            "collect_completed",
+            "collect_supply",
+            "attack_zombie",
+            "rescue_survivors",
+            "transport_supplies",
+            "confirm_transport",
+        }:
+            image["runtime_step"] = "radar_action"
+            image["repeat_runtime_step"] = True
         upgraded += 1
 
     for task in tasks:
@@ -1169,6 +1247,8 @@ def _normalize_settings(source, default):
 def _normalize_task(source, default):
     task_id = str(source.get("id", default["id"])).strip() or default["id"]
     name = str(source.get("name", default.get("name", task_id))).strip() or task_id
+    if task_id == "alliance_help" and name == "Помощь альянсу":
+        name = "Помощь другим игрокам"
     group = str(source.get("group", default["group"])).strip() or default["group"]
     uses_march = bool(source.get("uses_march", default.get("uses_march", False)))
     if task_id == "prize_hunt":
