@@ -93,6 +93,22 @@ SYSTEM_STEPS = (
         False,
     ),
     (
+        "loading_error_reload",
+        "Перезагрузить страницу после ошибки загрузки",
+        "zZuB1_loading_error_reload.png",
+        (526, 449, 753, 518),
+        (0, 0),
+        False,
+    ),
+    (
+        "last_igg_login",
+        "Войти в последний IGG Account",
+        "zZuB1_last_igg_login.png",
+        (504, 504, 599, 603),
+        (0, 0),
+        False,
+    ),
+    (
         "idle_collect_confirm",
         "Подтвердить автосбор",
         "current_screen.png",
@@ -340,7 +356,7 @@ DAILY_TASK_STEPS = {
         (
             "select_alliance",
             "Открыть письма альянса",
-            "mail_alliance_tab_live.png",
+            "mail_screen_live.png",
             (221, 32, 309, 59),
             (0, 0),
             True,
@@ -356,7 +372,7 @@ DAILY_TASK_STEPS = {
         (
             "select_reports",
             "Открыть боевые отчёты",
-            "mail_reports_tab_live.png",
+            "mail_alliance_tab_live.png",
             (61, 32, 132, 59),
             (0, 0),
             True,
@@ -509,6 +525,14 @@ DAILY_TASK_STEPS = {
             (958, 551, 1060, 677),
             (0, 0),
             False,
+        ),
+        (
+            "select_marked_project",
+            "Выбрать отмеченный проект пожертвований",
+            "alliance_technology_now.png",
+            (88, 20, 323, 63),
+            (0, 0),
+            True,
         ),
         (
             "select_project_construction",
@@ -1126,7 +1150,7 @@ def build_profile(destination):
     manifest = {
         "format": "doomsday-training-profile",
         "format_version": 1,
-        "app_version": "3.2.3",
+        "app_version": "3.2.4",
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "source_screen": {"width": 1280, "height": 720},
         "routine_tasks": tasks,
@@ -1184,12 +1208,19 @@ def build_profile(destination):
         system_image["block_seconds"] = 3.0
         if step_id in {
             "connection_interrupted",
+            "loading_error_reload",
+            "last_igg_login",
             "glory_league_close",
             "beast_taming_close",
             "google_play_cancel",
         }:
             system_image["startup_only"] = True
-        if step_id in {"connection_interrupted", "google_play_cancel"}:
+        if step_id in {
+            "connection_interrupted",
+            "loading_error_reload",
+            "last_igg_login",
+            "google_play_cancel",
+        }:
             system_image["delay"] = 8.0
         manifest["images"].append(system_image)
         payloads.append((output_path, entry_name))
@@ -1261,6 +1292,16 @@ def build_profile(destination):
                 configured_image["limit_key"] = "max_donations"
                 configured_image["allow_repeat"] = True
                 configured_image["block_seconds"] = 0.8
+            if task_id == "alliance_donations" and step_id == "select_marked_project":
+                configured_image.update(
+                    {
+                        "action": "alliance_marked_project",
+                        "routine_priority": 15,
+                        "confidence": 0.78,
+                        "orb_match_threshold": 3,
+                        "delay": 1.5,
+                    }
+                )
             if task_id == "alliance_donations" and step_id == "close_project":
                 configured_image["limit_key"] = "max_project_checks"
                 configured_image["allow_repeat"] = True
@@ -1418,6 +1459,14 @@ def build_profile(destination):
                     "select_reports",
                     "claim_reports",
                 )
+                mail_requirements = {
+                    "select_system": ["open_mail"],
+                    "claim_system": ["select_system"],
+                    "select_alliance": ["select_system"],
+                    "claim_alliance": ["select_alliance"],
+                    "select_reports": ["select_alliance"],
+                    "claim_reports": ["select_reports"],
+                }
                 if step_id == "close_rewards":
                     configured_image["routine_priority"] = 1
                     configured_image["allow_repeat"] = True
@@ -1427,8 +1476,9 @@ def build_profile(destination):
                     step_index = mail_sequence.index(step_id)
                     configured_image["routine_priority"] = 10 + step_index * 10
                     configured_image["runtime_step"] = step_id
-                    if step_index:
-                        configured_image["requires_runtime_steps"] = [mail_sequence[step_index - 1]]
+                    required_steps = mail_requirements.get(step_id)
+                    if required_steps:
+                        configured_image["requires_runtime_steps"] = required_steps
                     if step_id.startswith("select_"):
                         configured_image["confidence"] = 0.70
                         configured_image["orb_match_threshold"] = 3
@@ -1833,8 +1883,6 @@ def build_profile(destination):
         if required_hours is not None:
             configured_image["required_setting_key"] = "boost_hours"
             configured_image["required_setting_value"] = required_hours
-            if required_hours == 24:
-                configured_image["allow_higher_setting_fallback"] = True
         manifest["images"].append(configured_image)
         payloads.append((output_path, entry_name))
         boost_completion_uid = uid

@@ -27,7 +27,9 @@ class ProfileBundleTests(unittest.TestCase):
                 self.assertLessEqual(template.shape[0], 82)
 
             boost_24h_uid = str(uuid.uuid5(namespace, "gathering_boost:boost_24h"))
-            self.assertTrue(images[boost_24h_uid]["allow_higher_setting_fallback"])
+            self.assertFalse(
+                images[boost_24h_uid].get("allow_higher_setting_fallback", False)
+            )
 
     def test_portable_profile_contains_startup_and_radar_recovery(self):
         profile_path = Path(__file__).resolve().parents[1] / "profiles" / "BuZzbot_PC_1280x720.zip"
@@ -35,6 +37,8 @@ class ProfileBundleTests(unittest.TestCase):
         expected = {
             str(uuid.uuid5(namespace, "system:beast_taming_close")),
             str(uuid.uuid5(namespace, "system:google_play_cancel")),
+            str(uuid.uuid5(namespace, "system:last_igg_login")),
+            str(uuid.uuid5(namespace, "system:loading_error_reload")),
             str(uuid.uuid5(namespace, "radar:close_region_search")),
         }
 
@@ -46,6 +50,12 @@ class ProfileBundleTests(unittest.TestCase):
                 self.assertIn(images[uid]["path"], archive.namelist())
             google_uid = str(uuid.uuid5(namespace, "system:google_play_cancel"))
             self.assertGreaterEqual(images[google_uid]["delay"], 8.0)
+            login_uid = str(uuid.uuid5(namespace, "system:last_igg_login"))
+            self.assertTrue(images[login_uid]["startup_only"])
+            self.assertGreaterEqual(images[login_uid]["delay"], 8.0)
+            reload_uid = str(uuid.uuid5(namespace, "system:loading_error_reload"))
+            self.assertTrue(images[reload_uid]["startup_only"])
+            self.assertGreaterEqual(images[reload_uid]["delay"], 8.0)
 
     def test_march_templates_require_screen_change_confirmation(self):
         profile_path = Path(__file__).resolve().parents[1] / "profiles" / "BuZzbot_PC_1280x720.zip"
@@ -79,7 +89,7 @@ class ProfileBundleTests(unittest.TestCase):
         with zipfile.ZipFile(profile_path) as archive:
             manifest = json.loads(archive.read("profile.json"))
 
-        self.assertEqual(manifest["app_version"], "3.2.3")
+        self.assertEqual(manifest["app_version"], "3.2.4")
         tasks = {task["id"]: task for task in manifest["routine_tasks"]}
         images = {image["uid"]: image for image in manifest["images"]}
         donation = tasks["alliance_donations"]
@@ -89,10 +99,27 @@ class ProfileBundleTests(unittest.TestCase):
         project_uid = str(
             uuid.uuid5(namespace, "alliance_donations:select_project_research")
         )
+        marked_project_uid = str(
+            uuid.uuid5(namespace, "alliance_donations:select_marked_project")
+        )
+        select_alliance_uid = str(uuid.uuid5(namespace, "mail_rewards:select_alliance"))
+        select_reports_uid = str(uuid.uuid5(namespace, "mail_rewards:select_reports"))
         hospital_uid = str(uuid.uuid5(namespace, "heal:open_wounded"))
         zombie_attack_uid = str(uuid.uuid5(namespace, "zombie_hunt:attack"))
         radar_attack_uid = str(uuid.uuid5(namespace, "radar:attack_zombie"))
         self.assertLessEqual(images[project_uid]["confidence"], 0.74)
+        self.assertEqual(
+            images[marked_project_uid]["action"],
+            "alliance_marked_project",
+        )
+        self.assertEqual(
+            images[select_alliance_uid]["requires_runtime_steps"],
+            ["select_system"],
+        )
+        self.assertEqual(
+            images[select_reports_uid]["requires_runtime_steps"],
+            ["select_alliance"],
+        )
         self.assertTrue(images[hospital_uid]["grayscale"])
         self.assertLessEqual(images[hospital_uid]["confidence"], 0.74)
         self.assertEqual(images[zombie_attack_uid]["action"], "zombie_attack")

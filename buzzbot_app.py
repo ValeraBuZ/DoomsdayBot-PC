@@ -39,10 +39,12 @@ from buzzbot.ldplayer import (
     launch_instance,
     list_instances,
     reboot_instance,
+    tcp_serial_for_index,
 )
 from buzzbot.logging_utils import configure_logging, install_exception_logging
 from buzzbot.matching import (
     TemplateCache,
+    detect_alliance_marked_project_target,
     detect_radar_card_action_target,
     detect_radar_notification_targets,
     detect_radar_world_action_target,
@@ -56,6 +58,8 @@ from buzzbot.routines import (
     default_routine_tasks,
     effective_active_marches,
     effective_task_group,
+    gathering_boost_active_until,
+    gathering_boost_duration_hours,
     image_is_allowed_for_routine,
     is_task_effectively_enabled,
     next_due_task,
@@ -87,7 +91,7 @@ from buzzbot.state import BotState, compute_runtime_seconds
 from buzzbot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.2.3"
+APP_VERSION = "3.2.4"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -100,6 +104,7 @@ GAME_PACKAGE = "com.igg.android.doomsdaylastsurvivors"
 GAME_LOGIN_MINIMUM_SECONDS = 50.0
 GAME_LOGIN_STABLE_SECONDS = 12.0
 GAME_LOGIN_RESTART_SECONDS = 75.0
+GAME_LOGIN_MAX_RESTARTS = 2
 WORLD_SEARCH_TASK_IDS = {"food", "wood", "metal", "oil", "zombie_hunt", "collective_mind"}
 MARCH_OBSERVER_GRACE_SECONDS = 15.0
 
@@ -622,7 +627,7 @@ class AutoClicker:
         self.routine_completed_steps = set()
         self.routine_idle_confirmation_count = 0
         self.routine_home_recovery_attempted = False
-        self.routine_login_restart_attempted = False
+        self.routine_login_restart_count = 0
         self.routine_idle_guard_visible = False
         self.routine_idle_outside_since = 0.0
         self.routine_idle_recovery_attempted = False
@@ -813,7 +818,14 @@ class AutoClicker:
 
         profile = self._apply_player_resolution(frame.shape[1], frame.shape[0], persist=True)
         _ldconsole, instances = self._ldplayer_instances()
-        instance = next((item for item in instances if item.adb_serial == self.adb_serial), None)
+        connected_index = index_from_serial(self.adb_serial)
+        instance = next(
+            (
+                item for item in instances
+                if item.adb_serial == self.adb_serial or item.index == connected_index
+            ),
+            None,
+        )
         if instance:
             self.player_index = instance.index
             self.player_name = instance.name
@@ -878,13 +890,26 @@ class AutoClicker:
         return True
 
     def _auto_detect_adb_connection(self):
+        probe = AdbClient(self.adb_path or None, "")
         try:
-            devices = AdbClient(self.adb_path or None, "").list_devices()
+            devices = probe.list_devices()
         except AdbError as exc:
             logger.warning("Не удалось получить список ADB-устройств: %s", exc)
             return False
         if self.adb_serial in devices:
             return True
+
+        target = self.get_adb_repair_target()
+        if target:
+            tcp_serial = tcp_serial_for_index(target.index)
+            try:
+                probe.connect(tcp_serial)
+                devices = probe.list_devices()
+            except AdbError as exc:
+                logger.debug("TCP ADB %s пока недоступен: %s", tcp_serial, exc)
+            if tcp_serial in devices:
+                self._adopt_adb_serial(tcp_serial, target.index)
+                return True
 
         _ldconsole, instances = self._ldplayer_instances()
         current = self.get_current_account()
@@ -988,6 +1013,11 @@ class AutoClicker:
             if client.is_responsive():
                 self._adopt_adb_serial(target.adb_serial, target.index)
                 message = self.tr('adb_repaired', serial=target.adb_serial)
+                logger.info(message)
+                self.set_status_message(message, force=True)
+                return True
+            if self._auto_detect_adb_connection() and self.adb_client.is_responsive():
+                message = self.tr('adb_repaired', serial=self.adb_serial)
                 logger.info(message)
                 self.set_status_message(message, force=True)
                 return True
@@ -1504,14 +1534,20 @@ class AutoClicker:
             return False
 
     def _restart_game_for_login(self):
-        if not self.uses_adb or self.routine_login_restart_attempted:
+        if (
+            not self.uses_adb
+            or self.routine_login_restart_count >= GAME_LOGIN_MAX_RESTARTS
+        ):
             return False
-        self.routine_login_restart_attempted = True
+        self.routine_login_restart_count += 1
         try:
             if self.adb_client is None:
                 self._refresh_adb_client()
             self.set_status_message(
-                "Вход в игру: загрузка зависла, перезапускаю Doomsday",
+                (
+                    "Вход в игру: загрузка зависла, перезапускаю Doomsday "
+                    f"({self.routine_login_restart_count}/{GAME_LOGIN_MAX_RESTARTS})"
+                ),
                 force=True,
             )
             self.adb_client.force_stop_package(GAME_PACKAGE)
@@ -2501,6 +2537,13 @@ class AutoClicker:
         deployment_wait = max(0.0, self.routine_deployment_blocked_until - now)
         if deployment_wait > 0:
             active_marches = self.routine_max_marches
+        boost_task = self.get_routine_task("gathering_boost")
+        boost_deadline = gathering_boost_active_until(boost_task, now)
+        if boost_deadline:
+            self.routine_next_run["gathering_boost"] = max(
+                boost_deadline,
+                float(self.routine_next_run.get("gathering_boost", 0.0) or 0.0),
+            )
         runtime_tasks = self._scheduler_routine_tasks()
         index = pick_due_task_index(
             runtime_tasks,
@@ -2553,7 +2596,7 @@ class AutoClicker:
         self.routine_completed_steps = set()
         self.routine_idle_confirmation_count = 0
         self.routine_home_recovery_attempted = False
-        self.routine_login_restart_attempted = False
+        self.routine_login_restart_count = 0
         self.routine_idle_guard_visible = False
         self.routine_idle_outside_since = 0.0
         self.routine_idle_recovery_attempted = False
@@ -2743,6 +2786,21 @@ class AutoClicker:
                 now,
                 has_in_progress=radar_has_in_progress,
             )
+        elif task.get("id") == "gathering_boost":
+            active_until = gathering_boost_active_until(task, now)
+            if "use" in self.routine_completed_steps:
+                duration_hours = gathering_boost_duration_hours(
+                    self.routine_completed_steps,
+                    task.get("settings", {}).get("boost_hours", 8.0),
+                )
+                active_until = now + duration_hours * 3600.0
+                task.setdefault("settings", {})["active_until"] = active_until
+            self.routine_next_run[task["id"]] = max(
+                next_run_after_finish(task, now),
+                active_until,
+            )
+            if active_until:
+                self.save_config()
         else:
             self.routine_next_run[task["id"]] = next_run_after_finish(task, now)
         next_run_minutes = max(
@@ -2767,7 +2825,7 @@ class AutoClicker:
                     name=self.get_routine_task_name(task),
                     minutes=(
                         next_run_minutes
-                        if task.get("id") == "radar"
+                        if task.get("id") in {"radar", "gathering_boost"}
                         else float(task.get("interval_minutes", 1.0))
                     ),
                 ),
@@ -2781,7 +2839,7 @@ class AutoClicker:
         self.routine_completed_steps = set()
         self.routine_idle_confirmation_count = 0
         self.routine_home_recovery_attempted = False
-        self.routine_login_restart_attempted = False
+        self.routine_login_restart_count = 0
         self.routine_idle_guard_visible = False
         self.routine_idle_outside_since = 0.0
         self.routine_idle_recovery_attempted = False
@@ -3140,6 +3198,16 @@ class AutoClicker:
         task = self.get_routine_task(task_id)
         if not task:
             return False
+        if task_id == "gathering_boost":
+            active_until = gathering_boost_active_until(task)
+            if active_until:
+                self.routine_next_run[task_id] = active_until
+                remaining_minutes = max(1, int((active_until - time.time() + 59.999) // 60.0))
+                self.set_status_message(
+                    f"Усиление сбора уже активно: повтор через {remaining_minutes} мин",
+                    force=True,
+                )
+                return False
         task["enabled"] = True
         self.groups[effective_task_group(task)] = True
         self.routine_only_task_id = task_id
@@ -3799,7 +3867,7 @@ class AutoClicker:
                         self.routine_idle_confirmation_count = 0
                         if (
                             self.uses_adb
-                            and not self.routine_login_restart_attempted
+                            and self.routine_login_restart_count < GAME_LOGIN_MAX_RESTARTS
                             and idle >= GAME_LOGIN_RESTART_SECONDS
                             and self._restart_game_for_login()
                         ):
@@ -4024,6 +4092,35 @@ class AutoClicker:
 
         if self._resource_result_level_rejected(img_config):
             return False
+
+        if action == "alliance_marked_project":
+            frame, _origin = self._capture_screen_bgr(force=True)
+            target = detect_alliance_marked_project_target(frame)
+            if target is None:
+                logger.info("Alliance donation marker was not found; using project templates")
+                self.set_status_message(
+                    "Пожертвования: отметка проекта не найдена, проверяю резервные варианты",
+                    force=True,
+                )
+                return False
+            target_x, target_y = target
+            if self.uses_adb:
+                self.adb_client.tap(target_x, target_y)
+            else:
+                pyautogui.click(target_x, target_y)
+            self._invalidate_capture()
+            img_config["last_used"] = time.time()
+            logger.info(
+                "Alliance marked project selected at (%s, %s)",
+                target_x,
+                target_y,
+            )
+            self.set_status_message(
+                "Пожертвования: выбран отмеченный проект",
+                force=True,
+            )
+            self._interruptible_sleep(img_config.get("delay", self.sleep_found))
+            return True
 
         if action == "radar_defer_in_progress":
             self.routine_radar_in_progress_seen = True

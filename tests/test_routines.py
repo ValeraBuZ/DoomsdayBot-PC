@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime, timezone
+import time
 import uuid
 
 from buzzbot.routines import (
@@ -8,6 +9,8 @@ from buzzbot.routines import (
     default_routine_tasks,
     effective_active_marches,
     effective_task_group,
+    gathering_boost_active_until,
+    gathering_boost_duration_hours,
     image_is_allowed_for_routine,
     is_task_effectively_enabled,
     next_due_task,
@@ -271,6 +274,9 @@ class RoutineTaskTests(unittest.TestCase):
         donation_project_uid = str(
             uuid.uuid5(namespace, "alliance_donations:select_project_research")
         )
+        donation_marked_uid = str(
+            uuid.uuid5(namespace, "alliance_donations:select_marked_project")
+        )
         vip_claim_uid = str(uuid.uuid5(namespace, "vip_rewards:claim_chest"))
         vip_dismiss_uid = str(uuid.uuid5(namespace, "vip_rewards:dismiss_info"))
         vip_receive_uid = str(uuid.uuid5(namespace, "vip_rewards:receive_free"))
@@ -279,6 +285,7 @@ class RoutineTaskTests(unittest.TestCase):
             {"uid": donate_uid},
             {"uid": donation_close_uid},
             {"uid": donation_project_uid, "confidence": 0.88, "orb_match_threshold": 10},
+            {"uid": donation_marked_uid, "allow_repeat": True},
             {"uid": vip_claim_uid},
             {"uid": vip_dismiss_uid},
             {"uid": vip_receive_uid},
@@ -295,6 +302,9 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertIn(donate_uid, by_uid[donation_close_uid]["skip_if_visible_uids"])
         self.assertLessEqual(by_uid[donation_project_uid]["confidence"], 0.74)
         self.assertEqual(by_uid[donation_project_uid]["orb_match_threshold"], 3)
+        self.assertEqual(by_uid[donation_marked_uid]["action"], "alliance_marked_project")
+        self.assertEqual(by_uid[donation_marked_uid]["routine_priority"], 15)
+        self.assertFalse(by_uid[donation_marked_uid].get("allow_repeat", False))
         self.assertTrue(by_uid[vip_claim_uid]["allow_repeat"])
         self.assertTrue(by_uid[vip_dismiss_uid]["allow_repeat"])
         self.assertTrue(by_uid[vip_receive_uid]["allow_repeat"])
@@ -429,7 +439,7 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertFalse(runtime_step_is_ready(image, {"boost_category"}))
         self.assertTrue(runtime_step_is_ready(image, {"boost_24h"}))
 
-    def test_longer_boost_is_allowed_only_as_an_explicit_fallback(self):
+    def test_gathering_boost_duration_must_match_exactly(self):
         boost_8h = {
             "required_setting_key": "boost_hours",
             "required_setting_value": 8,
@@ -437,13 +447,26 @@ class RoutineTaskTests(unittest.TestCase):
         boost_24h = {
             "required_setting_key": "boost_hours",
             "required_setting_value": 24,
-            "allow_higher_setting_fallback": True,
         }
 
         self.assertTrue(setting_requirement_matches(boost_8h, {"boost_hours": 8}))
         self.assertFalse(setting_requirement_matches(boost_8h, {"boost_hours": 24}))
-        self.assertTrue(setting_requirement_matches(boost_24h, {"boost_hours": 8}))
+        self.assertFalse(setting_requirement_matches(boost_24h, {"boost_hours": 8}))
         self.assertTrue(setting_requirement_matches(boost_24h, {"boost_hours": 24}))
+
+    def test_gathering_boost_uses_the_duration_that_was_actually_selected(self):
+        self.assertEqual(gathering_boost_duration_hours({"boost_8h"}, 8), 8.0)
+        self.assertEqual(gathering_boost_duration_hours({"boost_24h"}, 8), 24.0)
+        self.assertEqual(gathering_boost_duration_hours(set(), 12), 12.0)
+
+    def test_gathering_boost_deadline_only_blocks_while_it_is_future(self):
+        task = {"settings": {"active_until": 130.0}}
+        self.assertEqual(gathering_boost_active_until(task, now=100.0), 130.0)
+        self.assertEqual(gathering_boost_active_until(task, now=130.0), 0.0)
+
+    def test_gathering_boost_deadline_uses_current_time_by_default(self):
+        task = {"settings": {"active_until": time.time() + 60.0}}
+        self.assertGreater(gathering_boost_active_until(task), 0.0)
 
     def test_completed_runtime_step_is_not_scanned_again(self):
         image = {"runtime_step": "world_search"}
@@ -605,6 +628,48 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertEqual(images[0]["confidence"], 0.75)
         self.assertEqual(images[0]["orb_match_threshold"], 3)
         self.assertTrue(images[0]["completes_routine"])
+
+    def test_old_profile_cannot_replace_eight_hour_boost_with_twenty_four(self):
+        boost_uid = str(
+            uuid.uuid5(PROFILE_NAMESPACE, "gathering_boost:boost_24h")
+        )
+        images = [{"uid": boost_uid, "allow_higher_setting_fallback": True}]
+
+        upgrade_strict_runtime_metadata(images, default_routine_tasks())
+
+        self.assertNotIn("allow_higher_setting_fallback", images[0])
+
+    def test_mail_moves_to_the_next_category_when_claim_button_is_absent(self):
+        steps = (
+            "open_mail",
+            "select_system",
+            "claim_system",
+            "select_alliance",
+            "claim_alliance",
+            "select_reports",
+            "claim_reports",
+        )
+        images = [
+            {
+                "uid": str(uuid.uuid5(PROFILE_NAMESPACE, f"mail_rewards:{step}")),
+                "requires_runtime_steps": ["wrong_previous_step"],
+            }
+            for step in steps
+        ]
+        tasks = [{"id": "mail_rewards"}]
+
+        self.assertEqual(upgrade_strict_runtime_metadata(images, tasks), len(steps))
+        by_step = dict(zip(steps, images))
+        self.assertTrue(
+            runtime_step_is_ready(by_step["select_alliance"], {"select_system"})
+        )
+        self.assertTrue(
+            runtime_step_is_ready(by_step["select_reports"], {"select_alliance"})
+        )
+        self.assertFalse(
+            runtime_step_is_ready(by_step["claim_alliance"], {"select_system"})
+        )
+        self.assertEqual(tasks[0]["completion_runtime_step"], "claim_reports")
 
     def test_completed_tasks_can_resume_when_claim_switches_to_daily_tab(self):
         import uuid

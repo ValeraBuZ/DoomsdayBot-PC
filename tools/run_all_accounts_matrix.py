@@ -19,12 +19,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from buzzbot_app import AutoClicker, CONFIG_FILE, GAME_PACKAGE, logger
-from buzzbot.adb import AdbClient
-from buzzbot.ldplayer import find_ldconsole, list_instances
+from buzzbot.adb import AdbClient, AdbError
+from buzzbot.ldplayer import find_ldconsole, list_instances, tcp_serial_for_index
 from buzzbot.routines import effective_task_group
 
 
 DEFAULT_INDEXES = (1, 2, 3, 4, 5, 7)
+LIVE_STATE_FILE = PROJECT_ROOT / "test_runs" / "live_runtime_state.json"
 DEFAULT_TASKS = (
     "vip_rewards",
     "radar",
@@ -86,7 +87,31 @@ def _safe_name(value):
 
 
 def _write_json(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _load_live_state():
+    try:
+        return json.loads(LIVE_STATE_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {"accounts": {}}
+
+
+def _active_boost_result(active_until):
+    deadline = datetime.fromtimestamp(float(active_until)).isoformat(timespec="minutes")
+    return {
+        "task": "gathering_boost",
+        "started": False,
+        "settled": True,
+        "actions": 0,
+        "completed_steps": ["active_timer_guard"],
+        "status": f"Усиление уже активно до {deadline}",
+        "duration_seconds": 0.0,
+        "screenshot": "",
+        "error": "",
+        "effect_until": float(active_until),
+    }
 
 
 @contextmanager
@@ -101,21 +126,46 @@ def _task_log(path):
         handler.close()
 
 
-def _wait_for_adb(client, timeout_seconds=150.0):
+def _wait_for_adb(client, instance_index=None, timeout_seconds=150.0):
+    configured_serial = client.serial
+    tcp_serial = (
+        tcp_serial_for_index(instance_index)
+        if instance_index is not None
+        else None
+    )
     deadline = time.monotonic() + timeout_seconds
+    next_connect_at = 0.0
     while time.monotonic() < deadline:
-        if client.is_available():
+        candidates = [configured_serial]
+        if tcp_serial:
+            candidates.append(tcp_serial)
+        try:
+            candidates.extend(AdbClient(client.adb_path, "").list_devices())
+        except AdbError:
+            pass
+        for serial in dict.fromkeys(item for item in candidates if item):
+            client.serial = serial
+            if not client.is_available():
+                continue
             try:
                 boot_completed = client._run(
                     ["shell", "getprop", "sys.boot_completed"],
                     timeout=5,
                 )
                 if str(boot_completed).strip() == "1":
-                    return True
+                    return serial
             except Exception:
                 pass
+        now = time.monotonic()
+        if tcp_serial and now >= next_connect_at:
+            try:
+                AdbClient(client.adb_path, "").connect(tcp_serial)
+            except AdbError:
+                pass
+            next_connect_at = now + 8.0
         time.sleep(2.0)
-    return False
+    client.serial = configured_serial
+    return None
 
 
 def _capture(client, path):
@@ -163,6 +213,7 @@ def run_task(
         "duration_seconds": 0.0,
         "screenshot": screenshot_path.name,
         "error": "",
+        "effect_until": 0.0,
     }
     observed_steps = set()
 
@@ -228,6 +279,9 @@ def run_task(
             observed_steps.update(bot.routine_completed_steps)
             result["completed_steps"] = sorted(observed_steps)
             result["status"] = bot.status_message
+            result["effect_until"] = float(
+                selected.get("settings", {}).get("active_until", 0.0) or 0.0
+            )
             if not result["settled"] and not result["error"]:
                 result["error"] = "timeout"
         except Exception as exc:
@@ -279,6 +333,8 @@ def main():
         "tasks": tasks,
         "accounts": [],
     }
+    live_state = _load_live_state()
+    live_accounts = live_state.setdefault("accounts", {})
 
     try:
         for index in indexes:
@@ -305,12 +361,15 @@ def main():
                 if launch.returncode != 0:
                     raise RuntimeError(launch.stderr.strip() or "LDPlayer launch failed")
                 client = AdbClient(serial=instance.adb_serial)
-                if not _wait_for_adb(client):
+                connected_serial = _wait_for_adb(client, instance.index)
+                if not connected_serial:
                     raise RuntimeError(f"ADB did not become ready: {instance.adb_serial}")
+                account_result["configured_serial"] = instance.adb_serial
+                account_result["serial"] = connected_serial
                 time.sleep(max(0.0, args.startup_settle_seconds))
 
                 login_result = run_task(
-                    instance.adb_serial,
+                    connected_serial,
                     account_key,
                     "game_login",
                     account_dir,
@@ -325,15 +384,27 @@ def main():
                     continue
 
                 for task_id in tasks:
-                    task_result = run_task(
-                        instance.adb_serial,
-                        account_key,
-                        task_id,
-                        account_dir,
-                        args.research_branch,
-                        min(7, max(1, args.resource_level)),
-                        args.collective_level,
+                    account_state = live_accounts.setdefault(instance.adb_serial, {})
+                    active_until = float(
+                        account_state.get("gathering_boost_active_until", 0.0) or 0.0
                     )
+                    if task_id == "gathering_boost" and active_until > time.time():
+                        task_result = _active_boost_result(active_until)
+                    else:
+                        task_result = run_task(
+                            connected_serial,
+                            account_key,
+                            task_id,
+                            account_dir,
+                            args.research_branch,
+                            min(7, max(1, args.resource_level)),
+                            args.collective_level,
+                        )
+                        effect_until = float(task_result.get("effect_until", 0.0) or 0.0)
+                        if task_id == "gathering_boost" and effect_until > time.time():
+                            account_state["gathering_boost_active_until"] = effect_until
+                            account_state["updated_at"] = datetime.now().isoformat(timespec="seconds")
+                            _write_json(LIVE_STATE_FILE, live_state)
                     account_result["tasks"].append(task_result)
                     _write_json(output_root / "summary.json", summary)
             except Exception as exc:

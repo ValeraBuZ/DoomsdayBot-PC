@@ -11,6 +11,7 @@ from buzzbot.ldplayer import (
     launch_instance,
     parse_list2,
     serial_for_index,
+    tcp_serial_for_index,
 )
 
 
@@ -22,6 +23,8 @@ class LDPlayerTests(unittest.TestCase):
         self.assertEqual(instances[0].adb_serial, "emulator-5560")
         self.assertEqual(serial_for_index(5), "emulator-5564")
         self.assertEqual(index_from_serial("emulator-5560"), 3)
+        self.assertEqual(tcp_serial_for_index(2), "127.0.0.1:5559")
+        self.assertEqual(index_from_serial("127.0.0.1:5559"), 2)
 
     def test_enabling_adb_creates_backup_and_updates_config(self):
         with tempfile.TemporaryDirectory() as temp_dir:

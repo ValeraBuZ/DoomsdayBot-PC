@@ -189,6 +189,18 @@ class AdbClientTests(unittest.TestCase):
         self.assertEqual(calls[1][0], ["adb.exe", "start-server"])
         self.assertEqual(client.serial, "emulator-5556")
 
+    def test_connect_uses_tcp_address_without_selected_serial(self):
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append((command, kwargs))
+            return FakeResult(stdout="connected to 127.0.0.1:5559\n")
+
+        client = self.make_client(runner)
+        self.assertIn("connected", client.connect("127.0.0.1:5559"))
+        self.assertEqual(calls[0][0], ["adb.exe", "connect", "127.0.0.1:5559"])
+        self.assertEqual(client.serial, "emulator-5556")
+
     def test_ui_xml_is_read_and_removed(self):
         calls = []
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import time
 import uuid
 
 
@@ -600,6 +601,29 @@ def setting_requirement_matches(image, settings):
         return False
 
 
+def gathering_boost_duration_hours(completed_steps, configured_hours=8.0):
+    """Return the duration that was actually selected for a gathering boost."""
+    completed = {str(step) for step in (completed_steps or ())}
+    if "boost_24h" in completed:
+        return 24.0
+    if "boost_8h" in completed:
+        return 8.0
+    try:
+        return max(1.0, float(configured_hours))
+    except (TypeError, ValueError):
+        return 8.0
+
+
+def gathering_boost_active_until(task, now=None):
+    """Return a future persisted boost deadline, or zero when it is inactive."""
+    try:
+        deadline = float((task or {}).get("settings", {}).get("active_until", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    current = time.time() if now is None else float(now)
+    return deadline if deadline > current else 0.0
+
+
 def completed_runtime_steps_for_image(image):
     """Return the current step and any predecessors implied by its screen."""
     implied = image.get("implied_runtime_steps", ())
@@ -867,6 +891,9 @@ def upgrade_repeatable_claim_metadata(images, tasks):
     alliance_technology_uid = str(
         uuid.uuid5(PROFILE_NAMESPACE, "alliance_donations:open_technology")
     )
+    alliance_marked_uid = str(
+        uuid.uuid5(PROFILE_NAMESPACE, "alliance_donations:select_marked_project")
+    )
     alliance_project_uids = [
         str(uuid.uuid5(PROFILE_NAMESPACE, f"alliance_donations:{step_id}"))
         for step_id in (
@@ -915,6 +942,7 @@ def upgrade_repeatable_claim_metadata(images, tasks):
     donation_priorities = {
         alliance_open_uid: 5,
         alliance_technology_uid: 10,
+        alliance_marked_uid: 15,
         alliance_donate_uid: 30,
         alliance_close_uid: 40,
     }
@@ -926,6 +954,16 @@ def upgrade_repeatable_claim_metadata(images, tasks):
         if image is None:
             continue
         image["routine_priority"] = priority
+        if uid == alliance_marked_uid:
+            image.update(
+                {
+                    "action": "alliance_marked_project",
+                    "confidence": 0.78,
+                    "orb_match_threshold": 3,
+                    "delay": 1.5,
+                }
+            )
+            image.pop("allow_repeat", None)
         if uid in alliance_project_uids:
             image["confidence"] = min(
                 0.74,
@@ -1038,7 +1076,32 @@ def upgrade_strict_runtime_metadata(images, tasks):
     boost_24h_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "gathering_boost:boost_24h"))
     boost_24h = images_by_uid.get(boost_24h_uid)
     if boost_24h is not None:
-        boost_24h["allow_higher_setting_fallback"] = True
+        # Never consume a 24-hour item when the user selected 8 hours.
+        boost_24h.pop("allow_higher_setting_fallback", None)
+        upgraded += 1
+
+    mail_requirements = {
+        "open_mail": (),
+        "select_system": ("open_mail",),
+        "claim_system": ("select_system",),
+        # Claim buttons are optional when a mailbox category is already empty.
+        "select_alliance": ("select_system",),
+        "claim_alliance": ("select_alliance",),
+        "select_reports": ("select_alliance",),
+        "claim_reports": ("select_reports",),
+    }
+    for index, (step_id, required_steps) in enumerate(mail_requirements.items()):
+        image = images_by_uid.get(
+            str(uuid.uuid5(PROFILE_NAMESPACE, f"mail_rewards:{step_id}"))
+        )
+        if image is None:
+            continue
+        image["runtime_step"] = step_id
+        image["routine_priority"] = 10 + index * 10
+        if required_steps:
+            image["requires_runtime_steps"] = list(required_steps)
+        else:
+            image.pop("requires_runtime_steps", None)
         upgraded += 1
 
     for task in tasks:
@@ -1053,6 +1116,8 @@ def upgrade_strict_runtime_metadata(images, tasks):
             task.setdefault("settings", {}).setdefault("max_queue_checks", 4)
         if task.get("id") == "research":
             task.setdefault("settings", {}).setdefault("max_lab_checks", 1)
+        if task.get("id") == "mail_rewards":
+            task["completion_runtime_step"] = "claim_reports"
 
     # Claiming a main mission can move the game directly to the daily tab.
     # Allow the first guarded swipe to resume from that screen even when the

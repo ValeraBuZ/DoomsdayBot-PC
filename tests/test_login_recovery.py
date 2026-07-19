@@ -15,12 +15,12 @@ class FakeAdbClient:
 
 
 class LoginRecoveryTests(unittest.TestCase):
-    def test_stalled_login_restarts_the_game_only_once(self):
+    def test_stalled_login_restarts_the_game_at_most_twice(self):
         bot = AutoClicker.__new__(AutoClicker)
         bot.input_backend = "adb"
         bot.adb_client = FakeAdbClient()
         bot.adb_serial = "emulator-5558"
-        bot.routine_login_restart_attempted = False
+        bot.routine_login_restart_count = 0
         bot._adb_frame_cache = object()
         bot._adb_frame_timestamp = 10.0
         bot.blocked_coords = {(10, 20): 30.0}
@@ -42,6 +42,16 @@ class LoginRecoveryTests(unittest.TestCase):
         self.assertEqual(bot.routine_idle_confirmation_count, 0)
         self.assertGreater(bot.routine_task_started_at, 0.0)
         self.assertEqual(bot.routine_task_started_at, bot.routine_last_action_time)
+        self.assertTrue(bot._restart_game_for_login())
+        self.assertEqual(
+            bot.adb_client.calls,
+            [
+                ("stop", GAME_PACKAGE),
+                ("launch", GAME_PACKAGE),
+                ("stop", GAME_PACKAGE),
+                ("launch", GAME_PACKAGE),
+            ],
+        )
         self.assertFalse(bot._restart_game_for_login())
 
 

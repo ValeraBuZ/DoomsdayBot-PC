@@ -7,6 +7,7 @@ import numpy as np
 
 from buzzbot.matching import (
     TemplateCache,
+    detect_alliance_marked_project_target,
     detect_radar_card_action_target,
     detect_radar_notification_targets,
     detect_radar_world_action_target,
@@ -39,6 +40,27 @@ class UnicodeImageReadTests(unittest.TestCase):
 
 
 class DynamicGameControlTests(unittest.TestCase):
+    def test_detects_marked_alliance_project_and_ignores_other_red_shapes(self):
+        frame = np.full((720, 1280, 3), (45, 50, 55), dtype=np.uint8)
+        cv2.circle(frame, (474, 263), 7, (10, 25, 230), thickness=-1)
+        cv2.rectangle(frame, (650, 470), (675, 475), (10, 25, 230), thickness=-1)
+        cv2.circle(frame, (1210, 55), 7, (10, 25, 230), thickness=-1)
+
+        self.assertEqual(
+            detect_alliance_marked_project_target(frame),
+            (419, 263),
+        )
+
+    def test_alliance_marker_target_scales_back_to_the_device_frame(self):
+        frame = np.full((360, 640, 3), (45, 50, 55), dtype=np.uint8)
+        cv2.circle(frame, (237, 132), 4, (10, 25, 230), thickness=-1)
+
+        target = detect_alliance_marked_project_target(frame)
+
+        self.assertIsNotNone(target)
+        self.assertTrue(205 <= target[0] <= 215)
+        self.assertTrue(128 <= target[1] <= 136)
+
     def test_detects_radar_notification_dots_and_targets_the_markers(self):
         frame = np.full((720, 1280, 3), (55, 70, 75), dtype=np.uint8)
         cv2.circle(frame, (700, 200), 8, (10, 20, 200), thickness=-1)

@@ -29,8 +29,19 @@ def serial_for_index(index):
     return f"emulator-{5554 + max(0, int(index)) * 2}"
 
 
+def tcp_serial_for_index(index):
+    return f"127.0.0.1:{5555 + max(0, int(index)) * 2}"
+
+
 def index_from_serial(serial):
     value = str(serial or "").strip().lower()
+    if value.startswith("127.0.0.1:"):
+        try:
+            port = int(value.rsplit(":", 1)[1])
+        except ValueError:
+            return None
+        offset = port - 5555
+        return offset // 2 if offset >= 0 and offset % 2 == 0 else None
     if not value.startswith("emulator-"):
         return None
     try:

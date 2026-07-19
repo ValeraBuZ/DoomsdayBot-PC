@@ -24,6 +24,58 @@ def _reference_frame(frame_bgr):
     return resized, width / REFERENCE_WIDTH, height / REFERENCE_HEIGHT
 
 
+def detect_alliance_marked_project_target(frame_bgr):
+    """Find the alliance technology card carrying the compact red marker."""
+    frame, scale_x, scale_y = _reference_frame(frame_bgr)
+    if frame is None:
+        return None
+
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(
+        hsv,
+        np.array([0, 120, 140], dtype=np.uint8),
+        np.array([12, 255, 255], dtype=np.uint8),
+    )
+    mask |= cv2.inRange(
+        hsv,
+        np.array([170, 120, 140], dtype=np.uint8),
+        np.array([179, 255, 255], dtype=np.uint8),
+    )
+
+    # Technology cards occupy the center of the tree. Excluding the title bar,
+    # navigation and right-side controls prevents unrelated red HUD badges.
+    mask[:90, :] = 0
+    mask[660:, :] = 0
+    mask[:, :170] = 0
+    mask[:, 1100:] = 0
+
+    candidates = []
+    component_count, _labels, stats, centroids = cv2.connectedComponentsWithStats(mask)
+    for index in range(1, component_count):
+        x, y, width, height, area = stats[index]
+        aspect = width / float(height) if height else 0.0
+        extent = area / float(width * height) if width and height else 0.0
+        if not (
+            70 <= area <= 220
+            and 9 <= width <= 18
+            and 9 <= height <= 18
+            and 0.7 <= aspect <= 1.4
+            and extent >= 0.45
+        ):
+            continue
+        center_x, center_y = centroids[index]
+        candidates.append((int(area), float(center_x), float(center_y)))
+
+    if not candidates:
+        return None
+
+    _area, marker_x, marker_y = max(candidates)
+    # The marker is attached to the right edge of the project card.
+    target_x = (marker_x - 55.0) * scale_x
+    target_y = marker_y * scale_y
+    return int(round(target_x)), int(round(target_y))
+
+
 def detect_radar_notification_targets(frame_bgr):
     """Find actionable radar markers by their compact red notification dot."""
     frame, scale_x, scale_y = _reference_frame(frame_bgr)

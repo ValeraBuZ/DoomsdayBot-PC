@@ -167,6 +167,21 @@ class AdbClient:
                 devices.append(parts[0])
         return devices
 
+    def connect(self, address):
+        target = str(address or "").strip()
+        if not target:
+            raise AdbError("Не указан адрес ADB-устройства.")
+        original_serial = self.serial
+        self.serial = ""
+        try:
+            output = self._run(["connect", target], timeout=10)
+        finally:
+            self.serial = original_serial
+        message = str(output or "").strip()
+        if "failed" in message.lower() or "unable" in message.lower():
+            raise AdbError(message)
+        return message
+
     def restart_server(self):
         original_serial = self.serial
         self.serial = ""
