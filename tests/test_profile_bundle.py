@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+import subprocess
+import sys
 import unittest
 import uuid
 import zipfile
@@ -9,6 +11,18 @@ import numpy as np
 
 
 class ProfileBundleTests(unittest.TestCase):
+    def test_profile_installer_can_run_as_a_script(self):
+        project_root = Path(__file__).resolve().parents[1]
+        result = subprocess.run(
+            [sys.executable, "tools/install_training_profile.py", "--help"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_gathering_boost_templates_exclude_inventory_counts(self):
         profile_path = Path(__file__).resolve().parents[1] / "profiles" / "BuZzbot_PC_1280x720.zip"
         namespace = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
