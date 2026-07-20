@@ -6,6 +6,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import time
@@ -16,11 +17,11 @@ import cv2
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from buzzbot.accounts import mask_google_account
+from buzzbot.accounts import extract_android_google_accounts, mask_google_account
 from buzzbot.adb import AdbClient
 from buzzbot.ldplayer import find_ldconsole, list_instances
-from buzzbot_app import AutoClicker, logger
-from tools.run_all_accounts_matrix import _wait_for_adb
+from buzzbot_app import AutoClicker, GAME_PACKAGE, logger
+from tools.run_all_accounts_matrix import _expected_adb_serials, _wait_for_adb
 
 
 def _run_hidden(command, timeout=30):
@@ -61,6 +62,33 @@ def _wait_for_main_screen(bot, timeout_seconds):
     return bot._is_main_screen_visible()
 
 
+def _read_device_diagnostics(client):
+    def safe_run(args, timeout):
+        try:
+            return client._run(args, timeout=timeout)
+        except Exception:
+            logger.exception("Account switch diagnostic command failed: %s", args)
+            return ""
+
+    account_dump = safe_run(["shell", "dumpsys", "account"], 30)
+    google_accounts = extract_android_google_accounts(account_dump)
+    android_id = str(safe_run(
+        ["shell", "settings", "get", "secure", "android_id"],
+        10,
+    ) or "").strip()
+    package_dump = str(safe_run(
+        ["shell", "dumpsys", "package", GAME_PACKAGE],
+        30,
+    ) or "")
+    version_match = re.search(r"versionName=([^\s]+)", package_dump)
+    return {
+        "device_accounts": [mask_google_account(email) for email in google_accounts],
+        "device_google_account_count": len(google_accounts),
+        "android_id": android_id,
+        "game_version": version_match.group(1) if version_match else "",
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description="Безопасная проверка списка Google в LDPlayer")
     parser.add_argument("--index", type=int, required=True)
@@ -77,6 +105,14 @@ def main():
     result = {
         "index": args.index,
         "instance": "",
+        "phase": "initializing",
+        "expected_adb_serials": [],
+        "adb_serial": "",
+        "device_accounts": [],
+        "device_google_account_count": 0,
+        "android_id": "",
+        "game_version": "",
+        "foreground_package": "",
         "main_screen": False,
         "probe_started": False,
         "accounts": [],
@@ -99,14 +135,22 @@ def main():
     handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
     logger.addHandler(handler)
     bot = None
+    client = None
     try:
+        result["phase"] = "starting_ldplayer"
         launch = _run_hidden([ldconsole, "launch", "--index", args.index])
         if launch.returncode != 0:
             raise RuntimeError(launch.stderr.strip() or "LDPlayer launch failed")
         client = AdbClient(serial=instance.adb_serial)
+        result["expected_adb_serials"] = list(
+            _expected_adb_serials(instance.adb_serial, args.index)
+        )
         serial = _wait_for_adb(client, instance_index=args.index, timeout_seconds=150.0)
         if not serial:
             raise RuntimeError("ADB did not become ready")
+        result["phase"] = "adb_ready"
+        result["adb_serial"] = serial
+        result.update(_read_device_diagnostics(client))
         time.sleep(max(0.0, args.startup_settle_seconds))
 
         bot = AutoClicker(root=None)
@@ -118,10 +162,12 @@ def main():
         bot.account_rotation_enabled = False
         bot._refresh_adb_client()
 
+        result["phase"] = "waiting_for_main_screen"
         result["main_screen"] = _wait_for_main_screen(bot, args.login_timeout)
         _capture(client, output_dir / "before_probe.png")
         if not result["main_screen"]:
             raise RuntimeError("Main screen was not detected")
+        result["phase"] = "main_screen_ready"
 
         probe_profile = {
             "id": "__probe__",
@@ -130,6 +176,7 @@ def main():
             "switch_completion_uid": "",
         }
         bot.account_profiles.append(probe_profile)
+        result["phase"] = "opening_google_chooser"
         result["probe_started"] = bool(bot.start_account_probe(probe_profile["id"]))
         if not result["probe_started"]:
             raise RuntimeError(f"Account probe did not start: {bot.status_message}")
@@ -147,12 +194,19 @@ def main():
         ]
         result["last_result"] = bot.account_switch_last_result
         result["status"] = bot.status_message
+        result["phase"] = "chooser_scanned"
         result["passed"] = bool(result["accounts"] and bot.account_switch_last_result)
         if not result["passed"]:
             result["error"] = "Google account list was not detected"
     except Exception as exc:
         logger.exception("Account switch probe failed")
         result["error"] = f"{type(exc).__name__}: {exc}"
+        if client is not None and client.is_available():
+            try:
+                result["foreground_package"] = client.current_foreground_package() or ""
+                _capture(client, output_dir / "failure_screen.png")
+            except Exception:
+                logger.exception("Account switch failure capture failed")
     finally:
         if bot is not None:
             result["status"] = result["status"] or bot.status_message

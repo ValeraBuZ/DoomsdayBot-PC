@@ -3,6 +3,7 @@ import unittest
 from buzzbot.accounts import (
     apply_tasks,
     default_account_profiles,
+    extract_android_google_accounts,
     extract_google_accounts,
     mask_google_account,
     next_enabled_account,
@@ -14,6 +15,18 @@ from buzzbot.routines import default_routine_tasks
 
 
 class AccountProfileTests(unittest.TestCase):
+    def test_extracts_unique_google_accounts_from_android_dump(self):
+        account_dump = """
+        Account {name=person@example.com, type=com.google}
+        Account {name=other@example.com, type=com.google}
+        Account {name=person@example.com, type=com.google}
+        Account {name=local, type=com.example}
+        """
+        self.assertEqual(
+            extract_android_google_accounts(account_dump),
+            ["person@example.com", "other@example.com"],
+        )
+
     def test_default_profile_targets_phoenix(self):
         profile = default_account_profiles()[0]
         self.assertEqual(profile["name"], "Phoenix675")

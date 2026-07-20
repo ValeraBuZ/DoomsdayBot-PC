@@ -150,6 +150,23 @@ def extract_google_accounts(ui_xml):
     return accounts
 
 
+def extract_android_google_accounts(account_dump):
+    """Return Google accounts reported by Android AccountManager."""
+    accounts = []
+    seen = set()
+    pattern = re.compile(r"Account \{name=([^,}]+), type=([^}]+)\}")
+    for name, account_type in pattern.findall(str(account_dump or "")):
+        if account_type.strip() != "com.google":
+            continue
+        email = name.strip()
+        normalized = email.casefold()
+        if not email or normalized in seen:
+            continue
+        seen.add(normalized)
+        accounts.append(email)
+    return accounts
+
+
 def mask_google_account(email):
     value = str(email or "").strip()
     if "@" not in value:

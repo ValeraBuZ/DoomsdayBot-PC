@@ -2,6 +2,7 @@ import random
 import unittest
 
 from tools.run_all_accounts_matrix import (
+    _expected_adb_serials,
     _game_is_foreground,
     _routine_outcome_is_success,
     _task_blocked_by_march_capacity,
@@ -18,6 +19,16 @@ from tools.run_random_program import (
 
 
 class RandomProgramTests(unittest.TestCase):
+    def test_adb_wait_never_substitutes_a_neighboring_ldplayer(self):
+        self.assertEqual(
+            _expected_adb_serials("emulator-5562", instance_index=7),
+            ("emulator-5568", "127.0.0.1:5569"),
+        )
+        self.assertEqual(
+            _expected_adb_serials("127.0.0.1:5569", instance_index=7),
+            ("127.0.0.1:5569", "emulator-5568"),
+        )
+
     def test_matrix_checks_game_foreground_before_each_task(self):
         class Client:
             def __init__(self, package):

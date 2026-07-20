@@ -138,7 +138,7 @@ def _launch_with_adb(ldconsole, instance, settle_seconds):
             error = launch.stderr.strip() or "LDPlayer launch failed"
         else:
             client = AdbClient(serial=instance.adb_serial)
-            if _wait_for_adb(client, timeout_seconds=150.0):
+            if _wait_for_adb(client, instance.index, timeout_seconds=150.0):
                 time.sleep(max(0.0, settle_seconds))
                 return client, attempt + 1
             error = f"ADB did not become ready: {instance.adb_serial}"
