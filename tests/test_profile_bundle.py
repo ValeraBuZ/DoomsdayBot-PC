@@ -103,7 +103,7 @@ class ProfileBundleTests(unittest.TestCase):
         with zipfile.ZipFile(profile_path) as archive:
             manifest = json.loads(archive.read("profile.json"))
 
-        self.assertEqual(manifest["app_version"], "3.2.4")
+        self.assertEqual(manifest["app_version"], "3.3.1")
         tasks = {task["id"]: task for task in manifest["routine_tasks"]}
         images = {image["uid"]: image for image in manifest["images"]}
         donation = tasks["alliance_donations"]
@@ -120,6 +120,8 @@ class ProfileBundleTests(unittest.TestCase):
         select_reports_uid = str(uuid.uuid5(namespace, "mail_rewards:select_reports"))
         claim_main_uid = str(uuid.uuid5(namespace, "completed_tasks:claim_main"))
         hospital_uid = str(uuid.uuid5(namespace, "heal:open_wounded"))
+        collect_healed_uid = str(uuid.uuid5(namespace, "heal:collect_finished"))
+        zombie_search_uid = str(uuid.uuid5(namespace, "zombie_hunt:search"))
         zombie_attack_uid = str(uuid.uuid5(namespace, "zombie_hunt:attack"))
         radar_attack_uid = str(uuid.uuid5(namespace, "radar_marches:attack_zombie"))
         vehicle_queue_uid = str(uuid.uuid5(namespace, "train_vehicles:queue"))
@@ -147,6 +149,10 @@ class ProfileBundleTests(unittest.TestCase):
         )
         self.assertTrue(images[hospital_uid]["grayscale"])
         self.assertLessEqual(images[hospital_uid]["confidence"], 0.74)
+        self.assertLessEqual(images[collect_healed_uid]["confidence"], 0.76)
+        self.assertEqual(images[collect_healed_uid]["routine_priority"], 1)
+        self.assertTrue(images[zombie_search_uid]["allow_repeat"])
+        self.assertEqual(images[zombie_search_uid]["block_seconds"], 2.0)
         self.assertEqual(images[zombie_attack_uid]["action"], "zombie_attack")
         self.assertEqual(images[radar_attack_uid]["action"], "zombie_attack")
         self.assertLessEqual(images[vehicle_queue_uid]["confidence"], 0.80)
@@ -167,7 +173,8 @@ class ProfileBundleTests(unittest.TestCase):
             for task_id in ("radar_rewards", "radar_quick", "radar_marches")
         }
         self.assertNotIn("radar", tasks)
-        self.assertTrue(all(task["manual_screen_required"] for task in radar_tasks.values()))
+        self.assertTrue(all(not task["manual_screen_required"] for task in radar_tasks.values()))
+        self.assertTrue(all(task["settings"]["visual_fallback"] for task in radar_tasks.values()))
         self.assertFalse(radar_tasks["radar_rewards"]["uses_march"])
         self.assertFalse(radar_tasks["radar_quick"]["uses_march"])
         self.assertTrue(radar_tasks["radar_marches"]["uses_march"])

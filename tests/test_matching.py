@@ -16,6 +16,7 @@ from buzzbot.matching import (
     detect_radar_notification_targets,
     detect_radar_world_action_target,
     healing_auto_fill_is_checked,
+    healing_number_editor_is_open,
     imread_unicode,
     radar_marker_has_notification,
     zombie_camp_checkbox_is_checked,
@@ -187,6 +188,19 @@ class DynamicGameControlTests(unittest.TestCase):
         cv2.line(frame, (810, 683), (820, 670), (220, 220, 220), thickness=3)
         self.assertTrue(zombie_camp_checkbox_is_checked(frame))
         self.assertTrue(healing_auto_fill_is_checked(frame))
+
+    def test_healing_checkbox_border_is_not_mistaken_for_checkmark(self):
+        frame = np.full((720, 1280, 3), (35, 45, 55), dtype=np.uint8)
+        cv2.rectangle(frame, (797, 662), (826, 690), (220, 220, 220), thickness=2)
+
+        self.assertFalse(healing_auto_fill_is_checked(frame))
+
+    def test_detects_healing_numeric_editor_only_with_bright_footer(self):
+        frame = np.full((720, 1280, 3), (35, 45, 55), dtype=np.uint8)
+        self.assertFalse(healing_number_editor_is_open(frame))
+
+        frame[616:720, :] = (250, 250, 250)
+        self.assertTrue(healing_number_editor_is_open(frame))
 
 
 if __name__ == "__main__":

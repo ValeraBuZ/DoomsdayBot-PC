@@ -56,6 +56,7 @@ from buzzbot.matching import (
     detect_radar_notification_targets,
     detect_radar_world_action_target,
     healing_auto_fill_is_checked,
+    healing_number_editor_is_open,
     radar_marker_has_notification,
     zombie_camp_checkbox_is_checked,
 )
@@ -101,7 +102,7 @@ from buzzbot.state import BotState, compute_runtime_seconds
 from buzzbot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.3.0"
+APP_VERSION = "3.3.1"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -2706,6 +2707,27 @@ class AutoClicker:
             tasks.append(runtime_task)
         return tasks
 
+    def _clear_routine_coordinate_blocks(self, task):
+        """Forget anti-loop clicks from the previous pass of the same task."""
+        template_ids = set()
+        for image in self.get_routine_templates(task, active_only=False):
+            identifier = image.get("uid") or image.get("path")
+            if identifier:
+                template_ids.add(identifier)
+        is_radar = is_radar_task_id(task.get("id"))
+        removed = 0
+        for key in list(self.blocked_coords):
+            prefix = key[0] if isinstance(key, tuple) and key else key
+            if prefix in template_ids or (is_radar and str(prefix).startswith("radar_dynamic")):
+                del self.blocked_coords[key]
+                removed += 1
+        if removed:
+            logger.info(
+                "Cleared %s stale coordinate blocks for routine %s",
+                removed,
+                task.get("id"),
+            )
+
     def _begin_due_routine(self, now):
         if self.current_routine_task_id:
             task = self.get_routine_task(self.current_routine_task_id)
@@ -2820,6 +2842,7 @@ class AutoClicker:
         self.routine_radar_confirmed_marker_keys = set()
         self.routine_radar_in_progress_seen = False
         self.routine_collective_tutorial_taps = 0
+        self._clear_routine_coordinate_blocks(task)
         template_count = len(self.get_routine_templates(task, active_only=True))
         self.set_status_message(
             self.tr(
@@ -3017,6 +3040,8 @@ class AutoClicker:
             self._return_to_main_screen(
                 require_settlement=routine_requires_settlement(task)
             )
+        elif is_radar_task_id(task.get("id")) and not task.get("manual_screen_required", False):
+            self._return_to_main_screen(require_settlement=True)
 
         radar_has_in_progress = bool(
             is_radar_task_id(task.get("id")) and self.routine_radar_in_progress_seen
@@ -3266,6 +3291,30 @@ class AutoClicker:
             logger.exception("Radar fallback could not capture the screen")
             return False
 
+        radar_guard_uid = str(
+            uuid.uuid5(
+                PROFILE_NAMESPACE,
+                f"{task.get('id')}:radar_screen_guard",
+            )
+        )
+        radar_guard_visible = self._template_uid_is_visible(radar_guard_uid)
+        if (
+            not radar_guard_visible
+            and self.routine_completed_steps.issubset({"radar_open"})
+            and self._is_settlement_screen_visible()
+        ):
+            height, width = frame.shape[:2]
+            open_target = (
+                int(round(width * 110 / 1280.0)),
+                int(round(height * 448 / 720.0)),
+            )
+            if self._tap_radar_fallback(
+                open_target,
+                "открываю радар с главного экрана",
+                "radar_open",
+            ):
+                return True
+
         card_target = detect_radar_card_action_target(frame)
         if card_target and self._tap_radar_fallback(
             card_target,
@@ -3274,13 +3323,7 @@ class AutoClicker:
         ):
             return True
 
-        radar_guard_uid = str(
-            uuid.uuid5(
-                PROFILE_NAMESPACE,
-                f"{task.get('id')}:radar_screen_guard",
-            )
-        )
-        if self._template_uid_is_visible(radar_guard_uid):
+        if radar_guard_visible:
             for marker_target in detect_radar_notification_targets(frame):
                 if self._tap_radar_fallback(
                     marker_target,
@@ -4743,6 +4786,106 @@ class AutoClicker:
         self.routine_last_action_time = time.time() - timeout - 0.1
         return True
 
+    def _configure_healing_troop_count(self, troop_count, frame):
+        """Enter a bounded healing amount only while the numeric editor is visible."""
+        scale_x = frame.shape[1] / 1280.0
+        scale_y = frame.shape[0] / 720.0
+        auto_x, auto_y = int(round(810 * scale_x)), int(round(678 * scale_y))
+        field_x = int(round(1085 * scale_x))
+        ok_x, ok_y = int(round(1198 * scale_x)), int(round(669 * scale_y))
+        row_positions = (173, 263, 353, 443)
+        base_quota, extra = divmod(max(1, int(troop_count)), len(row_positions))
+        row_quotas = [
+            base_quota + (1 if index < extra else 0)
+            for index in range(len(row_positions))
+        ]
+
+        if healing_auto_fill_is_checked(frame):
+            if self.uses_adb:
+                self.adb_client.tap(auto_x, auto_y)
+            else:
+                pyautogui.click(auto_x, auto_y)
+            self._invalidate_capture()
+            self._interruptible_sleep(0.35)
+            frame, _origin = self._capture_screen_bgr(force=True)
+            if healing_auto_fill_is_checked(frame):
+                logger.warning("Healing auto-fill could not be disabled safely")
+                self.set_status_message(
+                    "Лечение не запущено: не удалось отключить авто-пополнение",
+                    force=True,
+                )
+                return False
+
+        for row_index, (row_y, quota) in enumerate(
+            zip(row_positions, row_quotas),
+            start=1,
+        ):
+            if self.stop_event.is_set() or self.stop_hotkey_pressed:
+                return False
+            target_y = int(round(row_y * scale_y))
+            if self.uses_adb:
+                self.adb_client.tap(field_x, target_y)
+            else:
+                pyautogui.click(field_x, target_y)
+            self._invalidate_capture()
+            self._interruptible_sleep(0.25)
+
+            editor_frame, _origin = self._capture_screen_bgr(force=True)
+            if not healing_number_editor_is_open(editor_frame):
+                logger.warning(
+                    "Healing row %s was not editable; aborting before confirmation",
+                    row_index,
+                )
+                self.set_status_message(
+                    f"Лечение не запущено: поле количества {row_index} не открылось",
+                    force=True,
+                )
+                return False
+
+            if self.uses_adb:
+                self.adb_client.clear_focused_text(20)
+                self.adb_client.input_text(str(quota))
+            else:
+                pyautogui.hotkey("ctrl", "a")
+                pyautogui.write(str(quota))
+            self._invalidate_capture()
+            self._interruptible_sleep(0.15)
+
+            editor_frame, _origin = self._capture_screen_bgr(force=True)
+            if not healing_number_editor_is_open(editor_frame):
+                logger.warning("Healing numeric editor closed before row %s was confirmed", row_index)
+                self.set_status_message(
+                    f"Лечение не запущено: ввод количества {row_index} не подтверждён",
+                    force=True,
+                )
+                return False
+
+            # This coordinate is safe only after the white Android editor has
+            # been positively detected. It is the editor's OK button, not a
+            # blind tap near the in-game healing controls.
+            if self.uses_adb:
+                self.adb_client.tap(ok_x, ok_y)
+            else:
+                pyautogui.click(ok_x, ok_y)
+            self._invalidate_capture()
+            self._interruptible_sleep(0.25)
+
+            after_frame, _origin = self._capture_screen_bgr(force=True)
+            if healing_number_editor_is_open(after_frame):
+                logger.warning("Healing numeric editor remained open after row %s", row_index)
+                if self.uses_adb:
+                    self.adb_client.keyevent(4)
+                else:
+                    pyautogui.press("escape")
+                self._invalidate_capture()
+                self.set_status_message(
+                    f"Лечение не запущено: окно количества {row_index} не закрылось",
+                    force=True,
+                )
+                return False
+            logger.info("Healing row %s configured with quota %s", row_index, quota)
+        return True
+
     def _execute_action(self, img_config, location):
         x, y = location.x, location.y
         offset = img_config.get("click_offset", (0, 0))
@@ -5237,44 +5380,57 @@ class AutoClicker:
         if action == "heal_troops":
             troop_count = max(1, int(self._current_task_settings().get("troop_count", 10000)))
             frame, _origin = self._capture_screen_bgr(force=True)
-            scale_x = frame.shape[1] / 1280.0
-            scale_y = frame.shape[0] / 720.0
-            auto_x, auto_y = int(810 * scale_x), int(678 * scale_y)
-            field_x = int(1085 * scale_x)
-            ok_x, ok_y = int(1198 * scale_x), int(669 * scale_y)
-            row_positions = [173, 263, 353, 443]
-            base_quota, extra = divmod(troop_count, len(row_positions))
-            row_quotas = [base_quota + (1 if index < extra else 0) for index in range(len(row_positions))]
+            if not self._configure_healing_troop_count(troop_count, frame):
+                img_config["last_used"] = time.time()
+                return False
+
+            # Re-find the button after all editor dialogs have closed. The old
+            # template center can become stale while the hospital footer moves.
+            self._invalidate_capture()
+            fresh_location, fresh_bbox, _score = self._locate_image(img_config)
+            if fresh_location is None or fresh_bbox is None:
+                logger.warning("Healing start button disappeared before confirmation")
+                self.set_status_message(
+                    "Лечение не запущено: кнопка «Лечить» после ввода не найдена",
+                    force=True,
+                )
+                img_config["last_used"] = time.time()
+                return False
+            is_valid, reject_reason = self._validate_detected_match(img_config, fresh_bbox)
+            if not is_valid:
+                logger.warning("Healing start button rejected by %s", reject_reason)
+                self.set_status_message(
+                    "Лечение не запущено: кнопка «Лечить» не подтверждена",
+                    force=True,
+                )
+                img_config["last_used"] = time.time()
+                return False
+
             if self.uses_adb:
-                if healing_auto_fill_is_checked(frame):
-                    self.adb_client.tap(auto_x, auto_y)
-                    self._interruptible_sleep(0.2)
-                for row_y, quota in zip(row_positions, row_quotas):
-                    self.adb_client.tap(field_x, int(row_y * scale_y))
-                    for _ in range(12):
-                        self.adb_client.keyevent(67)
-                    self.adb_client.input_text(str(quota))
-                    self.adb_client.tap(ok_x, ok_y)
-                    time.sleep(0.15)
+                self.adb_client.tap(
+                    int(round(fresh_location.x)),
+                    int(round(fresh_location.y)),
+                )
             else:
-                if healing_auto_fill_is_checked(frame):
-                    pyautogui.click(auto_x, auto_y)
-                    self._interruptible_sleep(0.2)
-                for row_y, quota in zip(row_positions, row_quotas):
-                    pyautogui.click(field_x, int(row_y * scale_y))
-                    pyautogui.hotkey("ctrl", "a")
-                    pyautogui.write(str(quota))
-                    pyautogui.press("enter")
-                    time.sleep(0.15)
-            if self.uses_adb:
-                self.adb_client.tap(int(round(target_x)), int(round(target_y)))
-            else:
-                pyautogui.click(target_x, target_y)
+                pyautogui.click(fresh_location.x, fresh_location.y)
             self._invalidate_capture()
             img_config["last_used"] = time.time()
-            self.set_status_message(f"Запущено лечение, лимит {troop_count}", force=True)
-            self._interruptible_sleep(img_config.get("delay", self.sleep_found))
-            return
+            self._interruptible_sleep(max(0.8, float(img_config.get("delay", self.sleep_found))))
+
+            deadline = time.monotonic() + 6.0
+            while time.monotonic() < deadline and not self.stop_event.is_set():
+                location_after, bbox_after, _score = self._locate_image(img_config)
+                if location_after is None or bbox_after is None:
+                    self.set_status_message(f"Лечение запущено, лимит {troop_count}", force=True)
+                    logger.info("Healing started with configured limit %s", troop_count)
+                    return True
+                self._interruptible_sleep(0.5)
+            logger.warning("Healing start button remained visible after click")
+            self.set_status_message(
+                "Лечение не запущено: кнопка осталась на экране",
+                force=True,
+            )
+            return False
 
         if action == "train_highest":
             frame, _origin = self._capture_screen_bgr(force=True)

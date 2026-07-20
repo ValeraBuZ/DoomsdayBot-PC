@@ -290,14 +290,14 @@ DEFAULT_ROUTINE_TASKS = (
         "completion_uid": "",
         "complete_when_idle": True,
         "idle_confirmations": 2,
-        "manual_screen_required": True,
+        "manual_screen_required": False,
         "idle_completion_guard_uid": str(
             uuid.uuid5(PROFILE_NAMESPACE, "radar_rewards:radar_screen_guard")
         ),
         "settings": {
             "fixed_utc_hours": [0, 12],
             "in_progress_retry_minutes": 5,
-            "visual_fallback": False,
+            "visual_fallback": True,
         },
     },
     {
@@ -314,14 +314,14 @@ DEFAULT_ROUTINE_TASKS = (
         "completion_uid": "",
         "complete_when_idle": True,
         "idle_confirmations": 2,
-        "manual_screen_required": True,
+        "manual_screen_required": False,
         "idle_completion_guard_uid": str(
             uuid.uuid5(PROFILE_NAMESPACE, "radar_quick:radar_screen_guard")
         ),
         "settings": {
             "fixed_utc_hours": [0, 12],
             "in_progress_retry_minutes": 5,
-            "visual_fallback": False,
+            "visual_fallback": True,
         },
     },
     {
@@ -339,14 +339,14 @@ DEFAULT_ROUTINE_TASKS = (
         "completion_uid": "",
         "complete_when_idle": True,
         "idle_confirmations": 2,
-        "manual_screen_required": True,
+        "manual_screen_required": False,
         "idle_completion_guard_uid": str(
             uuid.uuid5(PROFILE_NAMESPACE, "radar_marches:radar_screen_guard")
         ),
         "settings": {
             "fixed_utc_hours": [0, 12],
             "in_progress_retry_minutes": 5,
-            "visual_fallback": False,
+            "visual_fallback": True,
         },
     },
     {
@@ -1098,6 +1098,27 @@ def upgrade_strict_runtime_metadata(images, tasks):
     images_by_uid = {str(image.get("uid") or ""): image for image in images}
     upgraded = 0
 
+    collect_finished = images_by_uid.get(
+        str(uuid.uuid5(PROFILE_NAMESPACE, "heal:collect_finished"))
+    )
+    if collect_finished is not None:
+        collect_finished.update(
+            {
+                "confidence": min(
+                    0.76,
+                    float(collect_finished.get("confidence", 0.88) or 0.88),
+                ),
+                "orb_match_threshold": 3,
+                "routine_priority": 1,
+                "required_setting_key": "collect_finished",
+                "required_setting_value": True,
+                "allow_repeat": True,
+                "block_seconds": 1.0,
+                "requires_settlement_screen": True,
+            }
+        )
+        upgraded += 1
+
     for task_id, sequence in STRICT_RUNTIME_SEQUENCES.items():
         is_hunt = task_id in {"zombie_hunt", "collective_mind"}
         if is_hunt:
@@ -1111,6 +1132,8 @@ def upgrade_strict_runtime_metadata(images, tasks):
                         "next_template_uid": world_search_uid,
                         "runtime_step": "world_search",
                         "routine_priority": 9,
+                        "allow_repeat": True,
+                        "block_seconds": 2.0,
                     }
                 )
                 region_image.pop("requires_runtime_steps", None)
@@ -1127,6 +1150,11 @@ def upgrade_strict_runtime_metadata(images, tasks):
             image["routine_priority"] = 10 + index * 10
             image["allow_runtime_resume"] = True
             image["implied_runtime_steps"] = list(sequence[:index])
+            if is_hunt:
+                # A new hunt pass legitimately reuses the same search controls
+                # and screen coordinates after a squad has returned home.
+                image["allow_repeat"] = True
+                image["block_seconds"] = 2.0
             if step_id == "march":
                 image["confirm_disappears"] = True
             if task_id.startswith("train_") and step_id == "queue":
@@ -1512,14 +1540,14 @@ def upgrade_radar_runtime_metadata(images, tasks):
         task["timeout_seconds"] = max(12.0, float(task.get("timeout_seconds", 0.0) or 0.0))
         task["interval_minutes"] = 720.0
         task["complete_when_idle"] = True
-        task["manual_screen_required"] = True
+        task["manual_screen_required"] = False
         task["idle_confirmations"] = max(2, int(task.get("idle_confirmations", 0) or 0))
         task["idle_completion_guard_uid"] = str(
             uuid.uuid5(PROFILE_NAMESPACE, f"{task_id}:radar_screen_guard")
         )
         task.setdefault("settings", {})["fixed_utc_hours"] = [0, 12]
         task["settings"].setdefault("in_progress_retry_minutes", 5)
-        task["settings"]["visual_fallback"] = False
+        task["settings"]["visual_fallback"] = True
     return upgraded
 
 

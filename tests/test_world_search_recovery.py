@@ -51,6 +51,24 @@ class WorldSearchRecoveryTests(unittest.TestCase):
         self.assertEqual(bot.adb_client.taps, [(43, 447), (43, 447)])
         self.assertEqual(bot.adb_client.keys, [4])
 
+    def test_new_hunt_pass_clears_only_its_stale_coordinate_blocks(self):
+        bot = self.make_bot()
+        bot.search_images = [
+            {"uid": "zombie-search", "path": "zombie.png", "group": "Убийство зомби"},
+            {"uid": "food-search", "path": "food.png", "group": "Сбор еды"},
+        ]
+        bot.blocked_coords = {
+            ("zombie-search", 640, 352): 999.0,
+            ("food-search", 640, 352): 999.0,
+        }
+
+        bot._clear_routine_coordinate_blocks(
+            {"id": "zombie_hunt", "group": "Убийство зомби"}
+        )
+
+        self.assertNotIn(("zombie-search", 640, 352), bot.blocked_coords)
+        self.assertIn(("food-search", 640, 352), bot.blocked_coords)
+
 
 if __name__ == "__main__":
     unittest.main()

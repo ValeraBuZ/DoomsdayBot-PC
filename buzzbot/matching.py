@@ -326,10 +326,23 @@ def healing_auto_fill_is_checked(frame_bgr):
     frame, _scale_x, _scale_y = _reference_frame(frame_bgr)
     if frame is None:
         return False
-    checkbox_inner = frame[665:689, 801:824]
+    # Ignore the permanently bright checkbox border. Only the inner area can
+    # contain the diagonal checkmark, so an empty box must remain unchecked.
+    checkbox_inner = frame[666:687, 800:822]
     hsv = cv2.cvtColor(checkbox_inner, cv2.COLOR_BGR2HSV)
-    bright_mark = hsv[:, :, 2] >= 155
+    bright_mark = (hsv[:, :, 2] >= 165) & (hsv[:, :, 1] <= 110)
     return float(np.count_nonzero(bright_mark)) / float(bright_mark.size) >= 0.08
+
+
+def healing_number_editor_is_open(frame_bgr):
+    """Detect the Android numeric editor shown after tapping a troop amount."""
+    frame, _scale_x, _scale_y = _reference_frame(frame_bgr)
+    if frame is None:
+        return False
+    editor_footer = frame[625:705, 20:1260]
+    hsv = cv2.cvtColor(editor_footer, cv2.COLOR_BGR2HSV)
+    neutral_bright = (hsv[:, :, 2] >= 215) & (hsv[:, :, 1] <= 45)
+    return float(np.count_nonzero(neutral_bright)) / float(neutral_bright.size) >= 0.80
 
 
 def imread_unicode(image_path, flags=cv2.IMREAD_COLOR):
