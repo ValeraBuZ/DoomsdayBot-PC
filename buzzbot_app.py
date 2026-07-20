@@ -30,6 +30,7 @@ from buzzbot.accounts import (
 )
 from buzzbot.adb import AdbClient, AdbError, find_adb_executable
 from buzzbot.compact_ui import build_compact_ui
+from buzzbot.credentials import CredentialError, CredentialStore
 from buzzbot.diagnostics import create_diagnostic_report
 from buzzbot.display import make_display_profile, matching_scales
 from buzzbot.grouping import build_group_iteration_plan, parse_click_sequence, parse_time_to_minutes, validate_hour_min
@@ -100,7 +101,7 @@ from buzzbot.state import BotState, compute_runtime_seconds
 from buzzbot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.2.6"
+APP_VERSION = "3.3.0"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -666,8 +667,10 @@ class AutoClicker:
         self.account_switch_selected_at = 0.0
         self.account_switch_confirmed = False
         self.account_switch_probe_ready = False
+        self.account_switch_auto_login_attempted = False
         self.account_switch_candidates = []
         self.account_switch_last_result = ""
+        self.credential_store = CredentialStore()
 
         # Источник изображения и ввода: обычный экран Windows или прямой ADB.
         discovered_adb = find_adb_executable()
@@ -2317,6 +2320,105 @@ class AutoClicker:
     def get_current_account(self):
         return find_account(self.account_profiles, self.current_account_id)
 
+    def account_has_saved_password(self, account_id):
+        try:
+            return self.credential_store.has_password(account_id)
+        except CredentialError as exc:
+            logger.warning("Не удалось проверить пароль профиля %s: %s", account_id, exc)
+            return False
+
+    def save_account_credentials(self, account_id, login, password=None, auto_login=False):
+        profile = find_account(self.account_profiles, account_id)
+        if not profile:
+            raise ValueError("Профиль аккаунта не найден.")
+        normalized_login = str(login or "").strip()
+        if not normalized_login:
+            raise ValueError("Введите логин Google.")
+        profile["google_login"] = normalized_login
+        profile["auto_login"] = bool(auto_login)
+        if password is not None and str(password):
+            self.credential_store.set_password(account_id, str(password))
+        self.save_config()
+        return True
+
+    def delete_account_password(self, account_id):
+        removed = self.credential_store.delete_password(account_id)
+        profile = find_account(self.account_profiles, account_id)
+        if profile:
+            profile["auto_login"] = False
+            self.save_config()
+        return removed
+
+    @staticmethod
+    def _google_signin_frame_is_visible(frame):
+        if frame is None or frame.ndim != 3 or frame.shape[0] < 300 or frame.shape[1] < 500:
+            return False
+        height, width = frame.shape[:2]
+        panel = frame[
+            int(height * 0.08):int(height * 0.93),
+            int(width * 0.20):int(width * 0.80),
+        ]
+        side = np.concatenate(
+            (
+                frame[:, :max(1, int(width * 0.12))],
+                frame[:, int(width * 0.88):],
+            ),
+            axis=1,
+        )
+        bright_panel_ratio = float(np.mean(np.min(panel, axis=2) >= 225))
+        side_values = side.astype(np.int16)
+        blue_side_ratio = float(np.mean(
+            (side_values[:, :, 0] >= 145)
+            & (side_values[:, :, 0] >= side_values[:, :, 1] + 30)
+            & (side_values[:, :, 1] >= side_values[:, :, 2] + 25)
+        ))
+        return bright_panel_ratio >= 0.55 and blue_side_ratio >= 0.35
+
+    def fill_google_credential(self, account_id, stage):
+        profile = find_account(self.account_profiles, account_id)
+        if not profile:
+            self.set_status_message("Профиль аккаунта не найден", force=True)
+            return False
+        if stage not in {"login", "password"}:
+            self.set_status_message("Неизвестный этап входа Google", force=True)
+            return False
+        if not self.uses_adb or self.adb_client is None or not self.adb_client.is_responsive():
+            self.set_status_message("Для входа Google требуется подключённый ADB", force=True)
+            return False
+        try:
+            package = self.adb_client.current_foreground_package()
+            if package not in {"com.google.android.gms", "com.google.android.gsf.login"}:
+                raise CredentialError("Откройте соответствующее поле на странице входа Google.")
+            frame = self.adb_client.screenshot_bgr()
+            if not self._google_signin_frame_is_visible(frame):
+                raise CredentialError("Страница входа Google не подтверждена.")
+            value = str(profile.get("google_login") or "").strip()
+            if stage == "password":
+                value = self.credential_store.get_password(account_id) or ""
+            if not value:
+                label = "Пароль" if stage == "password" else "Логин"
+                raise CredentialError(f"{label} не сохранён в профиле.")
+
+            height, width = frame.shape[:2]
+            field_x = int(round(width * 0.50))
+            field_y = int(round(height * 0.47))
+            next_x = int(round(width * 0.728))
+            next_y = int(round(height * 0.659))
+            self.adb_client.tap(field_x, field_y)
+            time.sleep(0.25)
+            self.adb_client.clear_focused_text(160)
+            self.adb_client.input_private_text(value)
+            time.sleep(0.35)
+            self.adb_client.tap(next_x, next_y)
+            self._invalidate_capture()
+            label = "Пароль" if stage == "password" else "Логин"
+            self.set_status_message(f"{label} Google введён; ожидаю следующий экран", force=True)
+            return True
+        except (AdbError, CredentialError, OSError, ValueError) as exc:
+            logger.warning("Безопасный ввод Google не выполнен: %s", exc)
+            self.set_status_message(str(exc), force=True)
+            return False
+
     def select_account_profile(self, account_id, save=True):
         profile = find_account(self.account_profiles, account_id)
         if not profile:
@@ -2362,6 +2464,8 @@ class AutoClicker:
             "adb_serial": str(adb_serial or self.adb_serial),
             "session_minutes": max(1.0, float(session_minutes)),
             "chooser_index": min(20, max(1, int(chooser_index))),
+            "google_login": "",
+            "auto_login": False,
             "switch_group": f"Аккаунт: {str(name).strip() or account_id}",
             "switch_completion_uid": "",
             "task_enabled": {},
@@ -2376,6 +2480,10 @@ class AutoClicker:
     def remove_account_profile(self, account_id):
         if len(self.account_profiles) <= 1:
             return False
+        try:
+            self.credential_store.delete_password(account_id)
+        except CredentialError as exc:
+            logger.warning("Не удалось удалить пароль профиля %s: %s", account_id, exc)
         self.account_profiles = [profile for profile in self.account_profiles if profile.get("id") != account_id]
         if self.current_account_id == account_id:
             self.select_account_profile(self.account_profiles[0]["id"], save=False)
@@ -2411,6 +2519,7 @@ class AutoClicker:
             "settings": {
                 "target_account_id": profile["id"],
                 "chooser_index": int(profile.get("chooser_index", 1)),
+                "auto_login": bool(profile.get("auto_login", False)),
             },
         }
         self.routine_only_task_id = "__account_switch__"
@@ -2419,6 +2528,7 @@ class AutoClicker:
         self.account_switch_selected_at = 0.0
         self.account_switch_confirmed = False
         self.account_switch_probe_ready = False
+        self.account_switch_auto_login_attempted = False
         return True
 
     def start_account_switch(self, account_id):
@@ -2838,6 +2948,7 @@ class AutoClicker:
             self.account_switch_selected_at = 0.0
             self.account_switch_confirmed = False
             self.account_switch_probe_ready = False
+            self.account_switch_auto_login_attempted = False
             self.routine_only_task_id = None
             if switch_error:
                 self.account_session_deadline = now + 300.0
@@ -3312,6 +3423,39 @@ class AutoClicker:
             return False
         logger.info("Account switch fallback opened commander profile at %s", target)
         self._interruptible_sleep(1.0)
+        return True
+
+    def _try_account_switch_saved_password(self, task):
+        if (
+            task.get("id") != "__account_switch__"
+            or not self.account_switch_selected_at
+            or self.account_switch_auto_login_attempted
+            or not self.uses_adb
+        ):
+            return False
+        try:
+            package = self.adb_client.current_foreground_package()
+        except AdbError:
+            return False
+        if package not in {"com.google.android.gms", "com.google.android.gsf.login"}:
+            return False
+
+        self.account_switch_auto_login_attempted = True
+        account_id = str(task.get("settings", {}).get("target_account_id") or "")
+        profile = find_account(self.account_profiles, account_id)
+        if not profile or not profile.get("auto_login", False):
+            self.account_switch_error = "Google требует подтверждение; автозаполнение отключено"
+            return True
+        if not self.account_has_saved_password(account_id):
+            self.account_switch_error = "Google требует подтверждение; пароль профиля не сохранён"
+            return True
+        if not self.fill_google_credential(account_id, "password"):
+            self.account_switch_error = "Автоматический ввод пароля Google не выполнен безопасно"
+            return True
+
+        self.account_switch_selected_at = time.time()
+        self.routine_last_action_time = time.time()
+        self.set_status_message("Пароль Google введён; проверяю главный экран", force=True)
         return True
 
     def _tap_routine_fallback(self, target, coord_key, status_message):
@@ -4263,6 +4407,14 @@ class AutoClicker:
                     self.routine_mode
                     and current_routine_task.get("id") == "__account_switch__"
                     and not action_occurred
+                    and self._try_account_switch_saved_password(current_routine_task)
+                ):
+                    continue
+
+                if (
+                    self.routine_mode
+                    and current_routine_task.get("id") == "__account_switch__"
+                    and not action_occurred
                     and self._try_account_switch_visual_fallback(current_routine_task)
                 ):
                     continue
@@ -5054,10 +5206,30 @@ class AutoClicker:
             if self.uses_adb and not self.stop_event.is_set():
                 try:
                     if requires_google_reauthentication(self.adb_client.ui_xml()):
-                        self.account_switch_error = (
-                            "Переключение остановлено: Google требует подтвердить вход вручную"
-                        )
-                        self.routine_action_completes_task = True
+                        target_account_id = str(settings.get("target_account_id") or "")
+                        profile = find_account(self.account_profiles, target_account_id)
+                        auto_login = bool(profile and profile.get("auto_login", False))
+                        if (
+                            auto_login
+                            and self.account_has_saved_password(target_account_id)
+                        ):
+                            self.account_switch_auto_login_attempted = True
+                            if self.fill_google_credential(target_account_id, "password"):
+                                self.account_switch_selected_at = time.time()
+                                self.set_status_message(
+                                    "Пароль Google введён; проверяю главный экран",
+                                    force=True,
+                                )
+                            else:
+                                self.account_switch_error = (
+                                    "Автоматический ввод пароля Google не выполнен безопасно"
+                                )
+                                self.routine_action_completes_task = True
+                        else:
+                            self.account_switch_error = (
+                                "Переключение остановлено: Google требует подтверждение входа"
+                            )
+                            self.routine_action_completes_task = True
                 except AdbError as exc:
                     logger.warning("Не удалось проверить экран входа Google: %s", exc)
             return

@@ -53,11 +53,19 @@ class AccountProfileTests(unittest.TestCase):
 
     def test_google_chooser_index_is_normalized(self):
         profiles = normalize_account_profiles([
-            {"id": "a", "name": "A", "chooser_index": 0},
+            {
+                "id": "a",
+                "name": "A",
+                "chooser_index": 0,
+                "google_login": " person@example.com ",
+                "auto_login": True,
+            },
             {"id": "b", "name": "B", "chooser_index": 99},
         ])
         self.assertEqual(profiles[0]["chooser_index"], 1)
         self.assertEqual(profiles[1]["chooser_index"], 20)
+        self.assertEqual(profiles[0]["google_login"], "person@example.com")
+        self.assertTrue(profiles[0]["auto_login"])
 
     def test_google_reauthentication_is_detected(self):
         self.assertTrue(requires_google_reauthentication('<node text="Подтвердите свою личность" />'))

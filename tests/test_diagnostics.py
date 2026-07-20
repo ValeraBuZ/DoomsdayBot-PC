@@ -9,8 +9,15 @@ from buzzbot.diagnostics import create_diagnostic_report, redact_config
 
 class DiagnosticReportTests(unittest.TestCase):
     def test_sensitive_values_are_redacted(self):
-        value = redact_config({"password": "secret", "contact": "user@example.com"})
+        value = redact_config(
+            {
+                "password": "secret",
+                "google_login": "+79990000000",
+                "contact": "user@example.com",
+            }
+        )
         self.assertEqual(value["password"], "<redacted>")
+        self.assertEqual(value["google_login"], "<redacted>")
         self.assertEqual(value["contact"], "<email>")
 
     def test_report_contains_logs_config_and_installation_checklist(self):

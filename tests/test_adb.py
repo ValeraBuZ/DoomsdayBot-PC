@@ -116,6 +116,22 @@ class AdbClientTests(unittest.TestCase):
             ["adb.exe", "-s", "emulator-5556", "shell", "input", "keyevent", "67"],
         )
 
+    @patch("buzzbot.adb.subprocess.Popen")
+    def test_private_text_is_sent_through_stdin_not_command_line(self, popen):
+        process = popen.return_value
+        process.communicate.return_value = (b"", b"")
+        process.returncode = 0
+        client = self.make_client(lambda *_args, **_kwargs: FakeResult())
+
+        client.input_private_text("secret-123")
+
+        command = popen.call_args.args[0]
+        payload = process.communicate.call_args.args[0]
+        self.assertEqual(command, ["adb.exe", "-s", "emulator-5556", "shell"])
+        self.assertNotIn("secret-123", " ".join(command))
+        self.assertNotIn(b"secret-123", payload)
+        self.assertIn(b"base64 -d", payload)
+
     def test_current_foreground_package_reads_focused_window(self):
         calls = []
 

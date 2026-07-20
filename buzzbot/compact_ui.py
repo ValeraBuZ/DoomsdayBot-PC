@@ -196,6 +196,119 @@ class TaskSettingsDialog:
         )
 
 
+class AccountCredentialsDialog:
+    def __init__(self, parent, bot, profile, refresh):
+        self.parent = parent
+        self.bot = bot
+        self.profile = profile
+        self.refresh = refresh
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title(f"Учётные данные: {profile.get('name', '')}")
+        self.dialog.resizable(False, False)
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+        _center(self.dialog, 560, 350)
+        self._build()
+
+    def _build(self):
+        body = ttk.Frame(self.dialog, padding=16)
+        body.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(body, text="Безопасный вход Google", style="CompactTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            body,
+            text=(
+                "Пароль шифруется средствами Windows и не сохраняется в config.json. "
+                "Перед вводом откройте нужное поле на странице Google."
+            ),
+            foreground="#72818A",
+            wraplength=520,
+        ).pack(anchor="w", pady=(5, 12))
+
+        form = ttk.Frame(body)
+        form.pack(fill=tk.X)
+        form.columnconfigure(1, weight=1)
+        ttk.Label(form, text="Логин Google").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=5)
+        self.login_var = tk.StringVar(value=self.profile.get("google_login", ""))
+        ttk.Entry(form, textvariable=self.login_var, width=42).grid(row=0, column=1, sticky="ew", pady=5)
+
+        ttk.Label(form, text="Пароль").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=5)
+        self.password_var = tk.StringVar()
+        password_entry = ttk.Entry(form, textvariable=self.password_var, show="●", width=42)
+        password_entry.grid(row=1, column=1, sticky="ew", pady=5)
+
+        self.auto_login_var = tk.BooleanVar(value=bool(self.profile.get("auto_login", False)))
+        ttk.Checkbutton(
+            form,
+            text="Использовать при повторном подтверждении Google",
+            variable=self.auto_login_var,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 2))
+
+        self.saved_label = ttk.Label(form, foreground="#355844")
+        self.saved_label.grid(row=3, column=0, columnspan=2, sticky="w", pady=(3, 0))
+        self._refresh_saved_label()
+
+        actions = ttk.Frame(body)
+        actions.pack(fill=tk.X, pady=(16, 0))
+        ttk.Button(actions, text="Ввести логин", command=lambda: self.fill("login")).pack(side=tk.LEFT)
+        ttk.Button(actions, text="Ввести пароль", command=lambda: self.fill("password")).pack(side=tk.LEFT, padx=6)
+        ttk.Button(actions, text="Удалить пароль", command=self.delete_password).pack(side=tk.LEFT)
+
+        buttons = ttk.Frame(body)
+        buttons.pack(fill=tk.X, side=tk.BOTTOM, pady=(14, 0))
+        ttk.Button(buttons, text="Сохранить", style="Primary.TButton", command=self.save_and_close).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Закрыть", command=self.dialog.destroy).pack(side=tk.RIGHT, padx=8)
+        self.dialog.bind("<Escape>", lambda _event: self.dialog.destroy())
+
+    def _refresh_saved_label(self):
+        saved = self.bot.account_has_saved_password(self.profile["id"])
+        self.saved_label.config(text=f"Зашифрованный пароль: {'сохранён' if saved else 'не сохранён'}")
+
+    def _save(self):
+        login = self.login_var.get().strip()
+        password = self.password_var.get()
+        self.bot.save_account_credentials(
+            self.profile["id"],
+            login,
+            password=password if password else None,
+            auto_login=self.auto_login_var.get(),
+        )
+        self.password_var.set("")
+        self._refresh_saved_label()
+        self.refresh()
+
+    def save_and_close(self):
+        try:
+            self._save()
+        except Exception as exc:
+            messagebox.showerror("Учётные данные", str(exc), parent=self.dialog)
+            return
+        self.dialog.destroy()
+
+    def fill(self, stage):
+        try:
+            self._save()
+        except Exception as exc:
+            messagebox.showerror("Учётные данные", str(exc), parent=self.dialog)
+            return
+        if not self.bot.fill_google_credential(self.profile["id"], stage):
+            messagebox.showwarning(
+                "Учётные данные",
+                "Ввод не выполнен. Откройте нужное поле на странице Google и проверьте ADB.",
+                parent=self.dialog,
+            )
+
+    def delete_password(self):
+        try:
+            self.bot.delete_account_password(self.profile["id"])
+        except Exception as exc:
+            messagebox.showerror("Учётные данные", str(exc), parent=self.dialog)
+            return
+        self.auto_login_var.set(False)
+        self.password_var.set("")
+        self._refresh_saved_label()
+        self.refresh()
+
+
 class AccountsDialog:
     def __init__(self, parent, bot, refresh):
         self.parent = parent
@@ -206,7 +319,7 @@ class AccountsDialog:
         self.dialog.resizable(False, False)
         self.dialog.transient(parent)
         self.dialog.grab_set()
-        _center(self.dialog, 620, 440)
+        _center(self.dialog, 720, 460)
         self._build()
 
     def _build(self):
@@ -236,6 +349,7 @@ class AccountsDialog:
         ttk.Button(buttons, text="Добавить", command=self.add).pack(side=tk.LEFT)
         ttk.Button(buttons, text="Удалить", command=self.delete).pack(side=tk.LEFT, padx=6)
         ttk.Button(buttons, text="Изменить", command=self.edit).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="Учётные данные", command=self.credentials).pack(side=tk.LEFT, padx=6)
         ttk.Button(buttons, text="Найти Google", command=self.probe).pack(side=tk.LEFT, padx=6)
         ttk.Button(buttons, text="Сменить в игре", style="Primary.TButton", command=self.switch_in_game).pack(side=tk.RIGHT)
         ttk.Button(buttons, text="Профиль", command=self.select).pack(side=tk.RIGHT, padx=6)
@@ -245,10 +359,13 @@ class AccountsDialog:
         self.listbox.delete(0, tk.END)
         for profile in self.bot.account_profiles:
             mark = "●" if profile.get("id") == self.bot.current_account_id else " "
+            login = str(profile.get("google_login") or "").strip()
+            login_label = mask_google_account(login) if "@" in login else ("указан" if login else "нет")
+            password_label = "да" if self.bot.account_has_saved_password(profile.get("id")) else "нет"
             self.listbox.insert(
                 tk.END,
                 f"{mark} {profile.get('name')} | Google №{profile.get('chooser_index')} | "
-                f"LD {profile.get('ldplayer_index')} | {profile.get('adb_serial')}",
+                f"логин: {login_label} | пароль: {password_label} | LD {profile.get('ldplayer_index')}",
             )
         if self.bot.account_profiles:
             current = next(
@@ -336,6 +453,12 @@ class AccountsDialog:
         self.bot.select_account_profile(profile["id"])
         self.dialog.destroy()
         self.refresh()
+
+    def credentials(self):
+        profile = self._selected()
+        if not profile:
+            return
+        AccountCredentialsDialog(self.dialog, self.bot, profile, self._reload)
 
     def switch_in_game(self):
         profile = self._selected()

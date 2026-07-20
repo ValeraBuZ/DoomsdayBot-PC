@@ -11,7 +11,10 @@ from datetime import datetime
 from pathlib import Path
 
 
-SENSITIVE_KEY = re.compile(r"password|passwd|token|secret|credential|authorization|cookie|email", re.I)
+SENSITIVE_KEY = re.compile(
+    r"password|passwd|token|secret|credential|authorization|cookie|email|login|username",
+    re.I,
+)
 EMAIL = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
 
 

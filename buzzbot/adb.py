@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import re
 import shutil
@@ -125,8 +126,49 @@ class AdbClient:
         escaped = str(value).replace("%", "\\%").replace(" ", "%s")
         self._run(["shell", "input", "text", escaped], timeout=5)
 
+    def input_private_text(self, value):
+        """Enter sensitive text without placing it in the host process command line."""
+        secret = str(value or "")
+        if not secret:
+            raise AdbError("Нельзя ввести пустое значение.")
+        if any(char in secret for char in ("\x00", "\r", "\n")):
+            raise AdbError("Секрет содержит неподдерживаемый перевод строки.")
+        if not secret.isascii():
+            raise AdbError("Безопасный ввод поддерживает только латинские символы и цифры.")
+        if self.adb_path is None or not self.serial:
+            raise AdbError("ADB не подключён к выбранному LDPlayer.")
+
+        encoded = base64.b64encode(secret.encode("utf-8")).decode("ascii")
+        script = (
+            f"value=$(printf %s {encoded} | base64 -d); "
+            'input text "$value"; unset value; exit\n'
+        ).encode("ascii")
+        command = [str(self.adb_path), "-s", self.serial, "shell"]
+        kwargs = {
+            "stdin": subprocess.PIPE,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            process = subprocess.Popen(command, **kwargs)
+            _stdout, stderr = process.communicate(script, timeout=10)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise AdbError(f"Не удалось выполнить безопасный ввод ADB: {exc}") from exc
+        if process.returncode != 0:
+            message = (stderr or b"").decode("utf-8", errors="replace").strip()
+            raise AdbError(message or "Безопасный ввод ADB завершился с ошибкой.")
+
     def keyevent(self, key_code):
         self._run(["shell", "input", "keyevent", int(key_code)], timeout=5)
+
+    def clear_focused_text(self, max_characters=128):
+        count = min(512, max(1, int(max_characters)))
+        self._run(
+            ["shell", "input", "keyevent", "KEYCODE_MOVE_END", *("KEYCODE_DEL",) * count],
+            timeout=10,
+        )
 
     def current_foreground_package(self):
         """Return the package owning the focused Android window, if available."""
