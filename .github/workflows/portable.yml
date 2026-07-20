@@ -42,6 +42,14 @@ jobs:
             -Path dist/BuZzbotPortable `
             -DestinationPath dist/BuZzbotPortable.zip `
             -CompressionLevel Optimal
+          $version = python -c "from buzzbot.version import APP_VERSION; print(APP_VERSION)"
+          $sha256 = (Get-FileHash dist/BuZzbotPortable.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          @{
+            version = $version.Trim()
+            sha256 = $sha256
+            archive = "BuZzbotPortable.zip"
+            published_at = (Get-Date).ToUniversalTime().ToString("o")
+          } | ConvertTo-Json | Set-Content dist/update-manifest.json -Encoding utf8NoBOM
 
       - name: Проверить запуск EXE
         shell: pwsh
@@ -61,12 +69,13 @@ jobs:
               Stop-Process -Id $process.Id
             }
           }
-
       - name: Сохранить ZIP сборки
         uses: actions/upload-artifact@v4
         with:
           name: BuZzbotPortable
-          path: dist/BuZzbotPortable.zip
+          path: |
+            dist/BuZzbotPortable.zip
+            dist/update-manifest.json
           if-no-files-found: error
 
       - name: Обновить релиз latest
@@ -83,12 +92,12 @@ jobs:
           if ($LASTEXITCODE -eq 0) {
             $assets = gh release view latest --json assets --jq '.assets[].name'
             foreach ($asset in $assets) {
-              if ($asset -ne 'BuZzbotPortable.zip') {
+              if ($asset -notin @('BuZzbotPortable.zip', 'update-manifest.json')) {
                 gh release delete-asset latest $asset --yes
               }
             }
-            gh release upload latest dist/BuZzbotPortable.zip --clobber
+            gh release upload latest dist/BuZzbotPortable.zip dist/update-manifest.json --clobber
             gh release edit latest --title "BuZzbot — последняя portable-сборка" --notes "Автоматическая сборка BuZzbot из ветки main."
           } else {
-            gh release create latest dist/BuZzbotPortable.zip --title "BuZzbot — последняя portable-сборка" --notes "Автоматическая сборка BuZzbot из ветки main."
+            gh release create latest dist/BuZzbotPortable.zip dist/update-manifest.json --title "BuZzbot — последняя portable-сборка" --notes "Автоматическая сборка BuZzbot из ветки main."
           }

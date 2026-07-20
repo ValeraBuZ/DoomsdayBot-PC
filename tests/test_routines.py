@@ -10,6 +10,7 @@ from buzzbot.routines import (
     default_routine_tasks,
     effective_active_marches,
     effective_task_group,
+    format_wait_duration,
     gathering_boost_active_until,
     gathering_boost_duration_hours,
     image_is_allowed_for_routine,
@@ -23,6 +24,7 @@ from buzzbot.routines import (
     normalize_routine_tasks,
     pick_due_task_index,
     prize_hunt_branch_allows_image,
+    radar_marker_requires_notification,
     radar_marker_was_confirmed,
     reset_radar_card_runtime_steps,
     reconcile_march_deadlines,
@@ -40,6 +42,7 @@ from buzzbot.routines import (
     upgrade_repeatable_claim_metadata,
     upgrade_resource_runtime_metadata,
     upgrade_strict_runtime_metadata,
+    zombie_fallback_levels,
 )
 
 
@@ -86,6 +89,10 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertFalse(by_id["radar_rewards"]["uses_march"])
         self.assertFalse(by_id["radar_quick"]["uses_march"])
         self.assertTrue(by_id["radar_marches"]["uses_march"])
+        self.assertEqual(
+            by_id["radar_marches"]["march_completion_runtime_step"],
+            "radar_march",
+        )
         self.assertTrue(all(not by_id[task_id]["manual_screen_required"] for task_id in RADAR_TASK_IDS))
         self.assertTrue(all(by_id[task_id]["settings"]["visual_fallback"] for task_id in RADAR_TASK_IDS))
         self.assertFalse(by_id["game_login"]["enabled"])
@@ -137,6 +144,24 @@ class RoutineTaskTests(unittest.TestCase):
             if task["id"] == "game_login"
         )
         self.assertEqual(login["timeout_seconds"], 330.0)
+
+    def test_normalization_preserves_radar_march_confirmation(self):
+        radar = next(
+            task
+            for task in normalize_routine_tasks(
+                [{"id": "radar_marches", "march_completion_runtime_step": "radar_march"}]
+            )
+            if task["id"] == "radar_marches"
+        )
+
+        self.assertEqual(radar["march_completion_runtime_step"], "radar_march")
+        self.assertFalse(radar["manual_screen_required"])
+
+    def test_long_waits_are_human_readable(self):
+        self.assertEqual(format_wait_duration(42, "ru"), "42 сек")
+        self.assertEqual(format_wait_duration(300, "ru"), "5 мин")
+        self.assertEqual(format_wait_duration(9700, "ru"), "2 ч 42 мин")
+        self.assertEqual(format_wait_duration(9700, "en"), "2 h 42 min")
 
     def test_resource_upgrade_clamps_legacy_level_to_seven(self):
         tasks = default_routine_tasks()
@@ -651,6 +676,15 @@ class RoutineTaskTests(unittest.TestCase):
         task["settings"]["in_progress_retry_minutes"] = "invalid"
         self.assertEqual(next_run_after_radar_pass(task, now, True), now + 300.0)
 
+    def test_radar_rewards_do_not_require_a_new_task_notification(self):
+        reward_marker = {"requires_radar_notification": False}
+        quick_marker = {"requires_radar_notification": True}
+
+        self.assertFalse(radar_marker_requires_notification(reward_marker, "radar_rewards"))
+        self.assertTrue(radar_marker_requires_notification(quick_marker, "radar_quick"))
+        self.assertFalse(radar_marker_requires_notification({}, "radar_rewards"))
+        self.assertTrue(radar_marker_requires_notification({}, "radar_marches"))
+
     def test_healing_training_and_hunts_are_upgraded_to_strict_sequences(self):
         import uuid
 
@@ -902,13 +936,33 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertTrue(prize_hunt_branch_allows_image(exit_image, False))
         self.assertFalse(prize_hunt_branch_allows_image(again_image, False))
 
-    def test_zombie_level_is_preserved_but_collective_level_is_selectable(self):
+    def test_zombie_lower_levels_and_collective_level_are_selectable(self):
         zombie_keys = {spec["key"] for spec in task_setting_specs("zombie_hunt")}
         collective_keys = {spec["key"] for spec in task_setting_specs("collective_mind")}
 
         self.assertNotIn("level_min", zombie_keys)
         self.assertNotIn("level_max", zombie_keys)
+        self.assertIn("fallback_levels", zombie_keys)
         self.assertIn("level", collective_keys)
+
+        zombie = next(task for task in default_routine_tasks() if task["id"] == "zombie_hunt")
+        self.assertEqual(zombie["settings"]["fallback_levels"], 3)
+        self.assertEqual(zombie["march_completion_runtime_step"], "march")
+        self.assertEqual(zombie_fallback_levels({"fallback_levels": -10}), 0)
+        self.assertEqual(zombie_fallback_levels({"fallback_levels": 99}), 3)
+
+        migrated = normalize_routine_tasks(
+            [{
+                "id": "zombie_hunt",
+                "march_completion_runtime_step": "",
+                "settings": {"level_min": 1, "level_max": 10},
+            }]
+        )
+        migrated_zombie = next(task for task in migrated if task["id"] == "zombie_hunt")
+        self.assertNotIn("level_min", migrated_zombie["settings"])
+        self.assertNotIn("level_max", migrated_zombie["settings"])
+        self.assertEqual(migrated_zombie["settings"]["fallback_levels"], 3)
+        self.assertEqual(migrated_zombie["march_completion_runtime_step"], "march")
 
     def test_strict_sequence_can_resume_from_visible_later_step(self):
         image = {
@@ -970,6 +1024,7 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertEqual(marker["confidence"], 0.68)
         self.assertEqual(marker["orb_match_threshold"], 3)
         self.assertEqual(marker["block_seconds"], 8.0)
+        self.assertTrue(marker["requires_radar_notification"])
         self.assertTrue(march["confirms_radar_marker"])
         self.assertEqual(march["runtime_step"], "radar_march")
         self.assertEqual(images[5]["requires_runtime_steps"], ["radar_forward"])
@@ -982,6 +1037,15 @@ class RoutineTaskTests(unittest.TestCase):
         )
         self.assertEqual(images[2]["action"], "radar_defer_in_progress")
         self.assertEqual(tasks[0]["settings"]["in_progress_retry_minutes"], 5)
+
+    def test_radar_reward_upgrade_accepts_completed_markers_without_red_dot(self):
+        marker_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "radar_rewards:task_car_reward"))
+        images = [{"uid": marker_uid}]
+        tasks = [{"id": "radar_rewards", "timeout_seconds": 12.0}]
+
+        upgrade_radar_runtime_metadata(images, tasks)
+
+        self.assertFalse(images[0]["requires_radar_notification"])
 
 
 if __name__ == "__main__":

@@ -489,9 +489,9 @@ DEFAULT_ROUTINE_TASKS = (
         "timeout_seconds": 12.0,
         "march_duration_minutes": 10.0,
         "completion_uid": "",
+        "march_completion_runtime_step": "march",
         "settings": {
-            "level_min": 1,
-            "level_max": 10,
+            "fallback_levels": 3,
             "stamina_reserve": 0,
             "max_attacks": 0,
         },
@@ -602,6 +602,7 @@ TASK_SETTING_SPECS = {
         {"key": "squad", "label": "Номер отряда", "kind": "int", "min": 1, "max": 5},
     ),
     "zombie_hunt": (
+        {"key": "fallback_levels", "label": "Понижений от уровня в игре", "kind": "int", "min": 0, "max": 3},
         {"key": "stamina_reserve", "label": "Оставлять выносливости", "kind": "int", "min": 0, "max": 10000},
         {"key": "max_attacks", "label": "Максимум атак (0 = без лимита)", "kind": "int", "min": 0, "max": 1000},
     ),
@@ -754,6 +755,29 @@ def no_action_retry_delay(task):
     return max(30.0, min(300.0, interval_seconds))
 
 
+def format_wait_duration(seconds, language="ru"):
+    """Format scheduler waits without exposing unwieldy raw second counts."""
+    total = max(0, int(float(seconds) + 0.999))
+    if total < 60:
+        return f"{total} {'sec' if language == 'en' else 'сек'}"
+    if total < 3600:
+        minutes, remaining = divmod(total, 60)
+        if remaining:
+            suffix = "min" if language == "en" else "мин"
+            seconds_suffix = "sec" if language == "en" else "сек"
+            return f"{minutes} {suffix} {remaining} {seconds_suffix}"
+        return f"{minutes} {'min' if language == 'en' else 'мин'}"
+    hours, remainder = divmod(total, 3600)
+    minutes = (remainder + 59) // 60
+    if minutes >= 60:
+        hours += 1
+        minutes = 0
+    hours_suffix = "h" if language == "en" else "ч"
+    if not minutes:
+        return f"{hours} {hours_suffix}"
+    return f"{hours} {hours_suffix} {minutes} {'min' if language == 'en' else 'мин'}"
+
+
 def routine_home_recovery_due(task, had_action, attempted, idle_seconds):
     """Recover a newly started task from an unrelated leftover screen."""
     timeout = max(1.0, float(task.get("timeout_seconds", 8.0) or 8.0))
@@ -874,6 +898,15 @@ def resource_search_retry_due(task, completed_steps, attempts, max_attempts=3):
     )
 
 
+def zombie_fallback_levels(settings, maximum=3):
+    """Return the bounded number of lower zombie levels to try."""
+    try:
+        configured = int((settings or {}).get("fallback_levels", maximum))
+    except (TypeError, ValueError):
+        configured = int(maximum)
+    return min(int(maximum), max(0, configured))
+
+
 def radar_marker_was_confirmed(uid, x, y, confirmed_keys, radius=12):
     """Match an animated radar marker to a previously confirmed deployment."""
     marker_uid = str(uid or "")
@@ -887,6 +920,14 @@ def radar_marker_was_confirmed(uid, x, y, confirmed_keys, radius=12):
         if (float(key_x) - float(x)) ** 2 + (float(key_y) - float(y)) ** 2 <= radius_squared:
             return True
     return False
+
+
+def radar_marker_requires_notification(image, task_id):
+    """Require a red dot for new tasks, but not for already-earned rewards."""
+    configured = image.get("requires_radar_notification")
+    if configured is not None:
+        return bool(configured)
+    return str(task_id or "") != "radar_rewards"
 
 
 def upgrade_resource_runtime_metadata(images, tasks):
@@ -1258,6 +1299,12 @@ def upgrade_strict_runtime_metadata(images, tasks):
                 20.0,
                 float(task.get("timeout_seconds", 0.0) or 0.0),
             )
+        if task.get("id") == "zombie_hunt":
+            settings = task.setdefault("settings", {})
+            settings.pop("level_min", None)
+            settings.pop("level_max", None)
+            settings["fallback_levels"] = zombie_fallback_levels(settings)
+            task["march_completion_runtime_step"] = "march"
         if task.get("id") == "heal":
             task["empty_home_is_success"] = True
         if str(task.get("id") or "").startswith("train_"):
@@ -1494,6 +1541,7 @@ def upgrade_radar_runtime_metadata(images, tasks):
                 image["runtime_step"] = "radar_marker"
                 image["repeat_runtime_step"] = True
                 image["prevents_idle_completion"] = True
+                image["requires_radar_notification"] = task_id != "radar_rewards"
                 image["confidence"] = min(0.68, float(image.get("confidence", 0.82)))
                 image["orb_match_threshold"] = min(
                     3,
@@ -1545,6 +1593,8 @@ def upgrade_radar_runtime_metadata(images, tasks):
         task["idle_completion_guard_uid"] = str(
             uuid.uuid5(PROFILE_NAMESPACE, f"{task_id}:radar_screen_guard")
         )
+        if task_id == "radar_marches":
+            task["march_completion_runtime_step"] = "radar_march"
         task.setdefault("settings", {})["fixed_utc_hours"] = [0, 12]
         task["settings"].setdefault("in_progress_retry_minutes", 5)
         task["settings"]["visual_fallback"] = True
@@ -1589,6 +1639,11 @@ def _normalize_task(source, default):
             float(default.get("timeout_seconds", 330.0)),
             timeout_seconds,
         )
+    settings = _normalize_settings(source.get("settings"), default.get("settings"))
+    if task_id == "zombie_hunt":
+        settings.pop("level_min", None)
+        settings.pop("level_max", None)
+        settings["fallback_levels"] = zombie_fallback_levels(settings)
     return {
         "id": task_id,
         "name": name,
@@ -1617,6 +1672,23 @@ def _normalize_task(source, default):
             )
             or ""
         ),
+        "march_completion_runtime_step": (
+            "march"
+            if task_id == "zombie_hunt"
+            else str(
+                source.get(
+                    "march_completion_runtime_step",
+                    default.get("march_completion_runtime_step", ""),
+                )
+                or ""
+            )
+        ),
+        "manual_screen_required": bool(
+            source.get(
+                "manual_screen_required",
+                default.get("manual_screen_required", False),
+            )
+        ),
         "complete_when_idle": bool(
             source.get("complete_when_idle", default.get("complete_when_idle", False))
         ),
@@ -1644,7 +1716,7 @@ def _normalize_task(source, default):
             )
             or ""
         ),
-        "settings": _normalize_settings(source.get("settings"), default.get("settings")),
+        "settings": settings,
     }
 
 

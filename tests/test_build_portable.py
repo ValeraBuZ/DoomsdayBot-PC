@@ -39,6 +39,7 @@ class PortableBuildTests(unittest.TestCase):
             stage = Path(tmp)
             (stage / "img").mkdir()
             (stage / "img" / "present.png").write_bytes(b"png")
+            (stage / "BuZzbot.exe").write_bytes(b"exe")
             (stage / "config.json").write_text(
                 json.dumps(
                     {
@@ -62,6 +63,7 @@ class PortableBuildTests(unittest.TestCase):
             stage = Path(tmp)
             (stage / "img" / "heal").mkdir(parents=True)
             (stage / "img" / "heal" / "template.png").write_bytes(b"png")
+            (stage / "BuZzbot.exe").write_bytes(b"exe")
             (stage / "config.json").write_text(
                 json.dumps(
                     {

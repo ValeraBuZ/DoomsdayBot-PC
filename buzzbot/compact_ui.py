@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from PIL import Image, ImageTk
 
@@ -502,6 +502,251 @@ class AccountsDialog:
         )
 
 
+class RemoteControlDialog:
+    def __init__(self, parent, bot, refresh=None):
+        self.parent = parent
+        self.bot = bot
+        self.refresh = refresh or (lambda: None)
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("Удалённое управление")
+        self.dialog.resizable(False, False)
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+        _center(self.dialog, 620, 485)
+        self._build()
+
+    def _build(self):
+        settings = self.bot.remote_settings
+        body = ttk.Frame(self.dialog, padding=18)
+        body.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(body, text="Удалённое управление", style="CompactTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            body,
+            text=(
+                "Устройство отправляет только состояние BuZzbot и принимает команды управления. "
+                "Секрет хранится в защищённом хранилище Windows и не попадает в config.json."
+            ),
+            foreground="#72818A",
+            wraplength=570,
+        ).pack(anchor="w", pady=(5, 14))
+
+        form = ttk.Frame(body)
+        form.pack(fill=tk.X)
+        form.columnconfigure(1, weight=1)
+        self.enabled_var = tk.BooleanVar(value=bool(settings.enabled))
+        ttk.Checkbutton(
+            form,
+            text="Подключать BuZzbot к Remote Hub",
+            variable=self.enabled_var,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        ttk.Label(form, text="Имя устройства").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=6)
+        self.name_var = tk.StringVar(value=settings.device_name)
+        ttk.Entry(form, textvariable=self.name_var, width=42).grid(row=1, column=1, sticky="ew", pady=6)
+
+        ttk.Label(form, text="Адрес Hub").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=6)
+        self.url_var = tk.StringVar(value=settings.hub_url)
+        ttk.Entry(form, textvariable=self.url_var, width=42).grid(row=2, column=1, sticky="ew", pady=6)
+
+        ttk.Label(form, text="Секрет Hub").grid(row=3, column=0, sticky="w", padx=(0, 12), pady=6)
+        self.token_var = tk.StringVar()
+        ttk.Entry(form, textvariable=self.token_var, show="●", width=42).grid(row=3, column=1, sticky="ew", pady=6)
+        token_state = (
+            "Секрет уже сохранён; оставьте поле пустым, чтобы не менять."
+            if self.bot.remote_has_token()
+            else "Скопируйте секрет из BuZzbot Remote Hub."
+        )
+        ttk.Label(form, text=token_state, foreground="#72818A").grid(row=4, column=1, sticky="w")
+
+        ttk.Label(form, text="ID устройства").grid(row=5, column=0, sticky="w", padx=(0, 12), pady=6)
+        id_var = tk.StringVar(value=settings.device_id)
+        ttk.Entry(form, textvariable=id_var, state="readonly", width=42).grid(row=5, column=1, sticky="ew", pady=6)
+
+        ttk.Separator(body).pack(fill=tk.X, pady=14)
+        ttk.Label(
+            body,
+            text=(
+                "Для машин в разных городах установите Tailscale на оба ПК и укажите адрес Hub "
+                "вида http://100.x.y.z:18765. Открывать порт роутера не требуется."
+            ),
+            foreground="#72818A",
+            wraplength=570,
+        ).pack(anchor="w")
+        self.status_var = tk.StringVar(value=self.bot.get_remote_control_summary())
+        ttk.Label(body, textvariable=self.status_var, foreground="#355844").pack(anchor="w", pady=(10, 0))
+
+        buttons = ttk.Frame(body)
+        buttons.pack(fill=tk.X, side=tk.BOTTOM, pady=(16, 0))
+        self.test_button = ttk.Button(buttons, text="Проверить", command=self.test)
+        self.test_button.pack(side=tk.LEFT)
+        ttk.Button(buttons, text="Сохранить", style="Primary.TButton", command=self.save).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Отмена", command=self.dialog.destroy).pack(side=tk.RIGHT, padx=8)
+        self.dialog.bind("<Escape>", lambda _event: self.dialog.destroy())
+
+    def _apply(self):
+        snapshot = self.bot.configure_remote_control(
+            enabled=self.enabled_var.get(),
+            hub_url=self.url_var.get(),
+            device_name=self.name_var.get(),
+            token=self.token_var.get(),
+        )
+        self.token_var.set("")
+        self.refresh()
+        return snapshot
+
+    def save(self):
+        try:
+            self._apply()
+        except Exception as exc:
+            messagebox.showerror("Удалённое управление", str(exc), parent=self.dialog)
+            return
+        self.dialog.destroy()
+
+    def test(self):
+        try:
+            self._apply()
+        except Exception as exc:
+            messagebox.showerror("Удалённое управление", str(exc), parent=self.dialog)
+            return
+        self.test_button.configure(state=tk.DISABLED)
+        self.status_var.set("Подключение к Hub...")
+
+        def worker():
+            try:
+                snapshot = self.bot.check_remote_connection()
+                message = (
+                    f"Связь установлена: {snapshot.get('device_name')}"
+                    if snapshot.get("connected")
+                    else "Hub не подтвердил подключение."
+                )
+                is_error = False
+            except Exception as exc:
+                message = str(exc)
+                is_error = True
+
+            def finish():
+                self.test_button.configure(state=tk.NORMAL)
+                self.status_var.set(message)
+                if is_error:
+                    messagebox.showerror("Удалённое управление", message, parent=self.dialog)
+
+            self.dialog.after(0, finish)
+
+        threading.Thread(target=worker, name="RemoteControlTest", daemon=True).start()
+
+
+class ReportCloudDialog:
+    def __init__(self, parent, bot):
+        self.parent = parent
+        self.bot = bot
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("Диагностические отчёты")
+        self.dialog.resizable(False, False)
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+        _center(self.dialog, 620, 430)
+        self._build()
+
+    def _build(self):
+        settings = self.bot.report_cloud_settings
+        body = ttk.Frame(self.dialog, padding=18)
+        body.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(body, text="Диагностические отчёты", style="CompactTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            body,
+            text=(
+                "BuZzbot создаёт обезличенный ZIP со снимком, логами и настройками. "
+                "Можно сразу поместить его в синхронизируемую папку Yandex Disk, "
+                "Google Drive или OneDrive."
+            ),
+            foreground="#72818A",
+            wraplength=570,
+        ).pack(anchor="w", pady=(5, 14))
+
+        form = ttk.Frame(body)
+        form.pack(fill=tk.X)
+        form.columnconfigure(1, weight=1)
+        self.enabled_var = tk.BooleanVar(value=bool(settings.enabled))
+        ttk.Checkbutton(
+            form,
+            text="Отправлять новые отчёты в облачную папку",
+            variable=self.enabled_var,
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+
+        ttk.Label(form, text="Имя этого ПК").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=6)
+        self.device_var = tk.StringVar(value=settings.device_name)
+        ttk.Entry(form, textvariable=self.device_var, width=39).grid(row=1, column=1, columnspan=2, sticky="ew", pady=6)
+
+        ttk.Label(form, text="Облачная папка").grid(row=2, column=0, sticky="w", padx=(0, 12), pady=6)
+        self.folder_var = tk.StringVar(value=settings.sync_folder)
+        ttk.Entry(form, textvariable=self.folder_var, width=34).grid(row=2, column=1, sticky="ew", pady=6)
+        ttk.Button(form, text="Выбрать", command=self.select_folder).grid(row=2, column=2, padx=(8, 0), pady=6)
+
+        ttk.Separator(body).pack(fill=tk.X, pady=16)
+        ttk.Label(
+            body,
+            text=(
+                "Очередь: BuZzbot Reports / Входящие / <имя ПК>. "
+                "Локальный дубль удаляется только после успешной передачи. "
+                "После проверки ZIP можно удалить из Входящих, и облачный клиент удалит его на остальных ПК."
+            ),
+            foreground="#72818A",
+            wraplength=570,
+        ).pack(anchor="w")
+
+        buttons = ttk.Frame(body)
+        buttons.pack(fill=tk.X, side=tk.BOTTOM, pady=(18, 0))
+        ttk.Button(buttons, text="Закрыть", command=self.dialog.destroy).pack(side=tk.RIGHT)
+        ttk.Button(buttons, text="Сохранить", command=self.save).pack(side=tk.RIGHT, padx=8)
+        ttk.Button(
+            buttons,
+            text="Создать отчёт",
+            style="Primary.TButton",
+            command=self.create_report,
+        ).pack(side=tk.LEFT)
+        self.dialog.bind("<Escape>", lambda _event: self.dialog.destroy())
+
+    def select_folder(self):
+        selected = filedialog.askdirectory(
+            parent=self.dialog,
+            title="Выберите папку Yandex Disk, Google Drive или OneDrive",
+            initialdir=self.folder_var.get() or None,
+        )
+        if selected:
+            self.folder_var.set(selected)
+            self.enabled_var.set(True)
+
+    def _apply(self):
+        return self.bot.configure_report_cloud(
+            enabled=self.enabled_var.get(),
+            sync_folder=self.folder_var.get(),
+            device_name=self.device_var.get(),
+        )
+
+    def save(self):
+        try:
+            self._apply()
+        except Exception as exc:
+            messagebox.showerror("Отчёты", str(exc), parent=self.dialog)
+            return
+        self.dialog.destroy()
+
+    def create_report(self):
+        try:
+            self._apply()
+            report_path, uploaded = self.bot.create_and_upload_diagnostic_report()
+        except Exception as exc:
+            messagebox.showerror(
+                "Отчёт",
+                f"Не удалось создать или отправить отчёт.\n\n{exc}",
+                parent=self.dialog,
+            )
+            return
+        title = "Отчёт отправлен" if uploaded else "Отчёт создан"
+        location = "Облачная очередь" if uploaded else "Локальный файл"
+        messagebox.showinfo(title, f"{location}:\n{report_path}", parent=self.dialog)
+
+
 def build_compact_ui(root, bot):
     colors = {
         "shell": "#14232B",
@@ -597,14 +842,6 @@ def build_compact_ui(root, bot):
         fg="#83949D",
         font=("Bahnschrift", 8),
     ).pack(side=tk.LEFT, padx=10)
-    tk.Label(
-        titlebar,
-        text="LDPLAYER CONTROL",
-        bg=colors["title"],
-        fg="#71858F",
-        font=("Bahnschrift", 8),
-    ).pack(side=tk.RIGHT, padx=18)
-
     body = tk.Frame(app, bg=colors["paper"])
     body.pack(fill=tk.BOTH, expand=True)
 
@@ -676,6 +913,7 @@ def build_compact_ui(root, bot):
     add_nav("АК", "Аккаунты", lambda: AccountsDialog(root, bot, refresh_all))
     add_nav("ЖР", "Отчёт", lambda: create_report())
     add_nav("НТ", "Настройки", lambda: run_root_callback("open_group_schedule"))
+    add_nav("UP", "Обновить", lambda: update_app())
 
     account_panel = tk.Frame(sidebar, bg="#1C2E37", padx=12, pady=12)
     account_panel.pack(side=tk.BOTTOM, fill=tk.X, padx=12, pady=12)
@@ -1015,13 +1253,57 @@ def build_compact_ui(root, bot):
 
     check_busy = {"value": False}
 
+    report_busy = {"value": False}
+
     def create_report():
-        try:
-            report_path = bot.create_diagnostic_report()
-        except Exception as exc:
-            messagebox.showerror("Отчёт", f"Не удалось создать отчёт:\n{exc}", parent=root)
+        if report_busy["value"]:
             return
-        messagebox.showinfo("Отчёт создан", f"Файл сохранён:\n{report_path}", parent=root)
+        if not bot.report_cloud_settings.configured:
+            ReportCloudDialog(root, bot)
+            return
+
+        report_busy["value"] = True
+        report_button.configure(state=tk.DISABLED, text="Создание...")
+        bot.set_status_message("Создаю диагностический отчёт и отправляю в облако", force=True)
+
+        def worker():
+            try:
+                report_path, uploaded = bot.create_and_upload_diagnostic_report()
+                error = None
+            except Exception as exc:
+                report_path = None
+                uploaded = False
+                error = exc
+
+            def finish():
+                report_busy["value"] = False
+                report_button.configure(state=tk.NORMAL, text="Создать отчёт")
+                if error is not None:
+                    messagebox.showerror(
+                        "Отчёт",
+                        f"Не удалось создать или отправить отчёт.\n\n{error}",
+                        parent=root,
+                    )
+                    return
+                title = "Отчёт отправлен" if uploaded else "Отчёт создан"
+                location = "Облачная очередь" if uploaded else "Локальный файл"
+                messagebox.showinfo(title, f"{location}:\n{report_path}", parent=root)
+
+            root.after(0, finish)
+
+        threading.Thread(target=worker, name="DiagnosticReport", daemon=True).start()
+
+    def update_app():
+        if bot.remote_update_in_progress:
+            messagebox.showinfo("Обновление", "Проверка обновления уже выполняется.", parent=root)
+            return
+        if not messagebox.askyesno(
+            "Обновление BuZzbot",
+            f"Проверить и установить новую версию?\n\nТекущая версия: {bot.app_version}",
+            parent=root,
+        ):
+            return
+        bot.start_update()
 
     report_button = tk.Button(
         activity_tools,
@@ -1285,6 +1567,29 @@ def build_compact_ui(root, bot):
                     )
                     level_combo.pack(side=tk.RIGHT, padx=(4, 0))
                     level_combo.bind("<<ComboboxSelected>>", select_collective_level)
+                elif task["id"] == "zombie_hunt":
+                    fallback_var = tk.StringVar(
+                        value=f"-{int(task.get('settings', {}).get('fallback_levels', 3) or 0)}"
+                    )
+
+                    def select_zombie_fallback(_event=None, current_task=task, variable=fallback_var):
+                        try:
+                            fallback = int(variable.get().lstrip("-"))
+                        except ValueError:
+                            fallback = 3
+                        current_task.setdefault("settings", {})["fallback_levels"] = min(3, max(0, fallback))
+                        bot.save_config()
+
+                    fallback_combo = ttk.Combobox(
+                        row,
+                        textvariable=fallback_var,
+                        values=("-0", "-1", "-2", "-3"),
+                        state="readonly",
+                        width=3,
+                        style="Deck.TCombobox",
+                    )
+                    fallback_combo.pack(side=tk.RIGHT, padx=(4, 0))
+                    fallback_combo.bind("<<ComboboxSelected>>", select_zombie_fallback)
 
                 if task_setting_specs(task["id"]):
                     tk.Button(

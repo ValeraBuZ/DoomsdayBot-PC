@@ -151,6 +151,9 @@ def stage_templates():
 
 
 def validate_portable_layout():
+    for executable_name in ("BuZzbot.exe",):
+        if not (STAGE_DIR / executable_name).is_file():
+            raise FileNotFoundError(f"Portable executable is missing: {executable_name}")
     image_dir = STAGE_DIR / "img"
     png_count = sum(1 for _path in image_dir.rglob("*.png"))
     if png_count == 0:

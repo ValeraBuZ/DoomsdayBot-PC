@@ -67,6 +67,7 @@ from buzzbot.routines import (
     default_routine_tasks,
     effective_active_marches,
     effective_task_group,
+    format_wait_duration,
     gathering_boost_active_until,
     gathering_boost_duration_hours,
     image_is_allowed_for_routine,
@@ -80,6 +81,7 @@ from buzzbot.routines import (
     normalize_routine_tasks,
     pick_due_task_index,
     prize_hunt_branch_allows_image,
+    radar_marker_requires_notification,
     radar_marker_was_confirmed,
     reset_radar_card_runtime_steps,
     reconcile_march_deadlines,
@@ -97,12 +99,27 @@ from buzzbot.routines import (
     upgrade_repeatable_claim_metadata,
     upgrade_resource_runtime_metadata,
     upgrade_strict_runtime_metadata,
+    zombie_fallback_levels,
+)
+from buzzbot.remote_control import (
+    REMOTE_CREDENTIAL_KEY,
+    RemoteControlClient,
+    RemoteSettings,
+    load_remote_settings,
+    save_remote_settings,
+)
+from buzzbot.report_cloud import (
+    ReportCloudSettings,
+    load_report_cloud_settings,
+    save_report_cloud_settings,
+    upload_report_to_sync_folder,
 )
 from buzzbot.state import BotState, compute_runtime_seconds
 from buzzbot.storage import move_file_to_trash, save_json_with_backup
+from buzzbot.updater import UpdateError, download_and_stage_update, launch_staged_update
+from buzzbot.version import APP_VERSION
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.3.1"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -127,6 +144,27 @@ try:
     ctypes.windll.user32.ShowWindow(ctypes.windll.kernel32.GetConsoleWindow(), 0)
 except:
     pass
+
+
+def enable_windows_high_dpi():
+    """Let Tk render text and images at the monitor's native DPI."""
+    if os.name != "nt":
+        return
+    try:
+        per_monitor_v2 = ctypes.c_void_p(-4)
+        if ctypes.windll.user32.SetProcessDpiAwarenessContext(per_monitor_v2):
+            return
+    except (AttributeError, OSError):
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        return
+    except (AttributeError, OSError):
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except (AttributeError, OSError):
+        pass
 
 import pyautogui
 from PIL import Image, ImageGrab, ImageTk
@@ -264,7 +302,7 @@ LANGUAGES = {
         'routine_no_enabled': "Включите хотя бы одну рутинную задачу.",
         'routine_no_templates': "Для включённых задач нет активных шаблонов. Снимите хотя бы один шаблон в настройках задач.",
         'routine_task_started': "Задача: {name} | группа: {group} | шаблонов: {count}",
-        'routine_waiting': "Ожидание: следующая задача «{name}» через {seconds} сек | походы {active}/{maximum}",
+        'routine_waiting': "Ожидание: следующая задача «{name}» через {wait} | походы {active}/{maximum}",
         'routine_completed': "Задача «{name}» завершена | следующий запуск через {minutes:g} мин",
         'routine_no_action': "Задача «{name}» не выполнена: действий не найдено | повтор через {seconds} сек",
         'routine_recovering_home': "Действия не найдены: один раз возвращаюсь на главный экран",
@@ -470,7 +508,7 @@ LANGUAGES = {
         'routine_no_enabled': "Enable at least one routine task.",
         'routine_no_templates': "Enabled tasks have no active templates. Capture at least one template in task settings.",
         'routine_task_started': "Task: {name} | group: {group} | templates: {count}",
-        'routine_waiting': "Waiting: next task '{name}' in {seconds} sec | marches {active}/{maximum}",
+        'routine_waiting': "Waiting: next task '{name}' in {wait} | marches {active}/{maximum}",
         'routine_completed': "Task '{name}' complete | next run in {minutes:g} min",
         'routine_no_action': "Task '{name}' was not completed: no action found | retry in {seconds} sec",
         'routine_recovering_home': "No action found: returning to the main screen once",
@@ -652,6 +690,7 @@ class AutoClicker:
         self.routine_idle_outside_since = 0.0
         self.routine_idle_recovery_attempted = False
         self.routine_resource_retry_count = 0
+        self.zombie_level_restore = {}
         self.routine_radar_pending_marker_key = None
         self.routine_radar_confirmed_marker_keys = set()
         self.routine_radar_in_progress_seen = False
@@ -672,6 +711,19 @@ class AutoClicker:
         self.account_switch_candidates = []
         self.account_switch_last_result = ""
         self.credential_store = CredentialStore()
+
+        # Remote settings are machine-local so copied portable folders receive
+        # a distinct device identity and never publish the shared secret.
+        self.remote_settings = (
+            load_remote_settings()
+            if self.root
+            else RemoteSettings(device_id="headless", device_name="headless")
+        )
+        self.remote_control_client = None
+        self.remote_access_allowed = True
+        self.remote_update_thread = None
+        self.remote_update_in_progress = False
+        self.report_cloud_settings = load_report_cloud_settings() if self.root else ReportCloudSettings()
 
         # Источник изображения и ввода: обычный экран Windows или прямой ADB.
         discovered_adb = find_adb_executable()
@@ -768,6 +820,266 @@ class AutoClicker:
         finally:
             if self.root:
                 self.root.after(100, self.process_gui_queue)
+
+    def _remote_token(self):
+        try:
+            return self.credential_store.get_password(REMOTE_CREDENTIAL_KEY) or ""
+        except CredentialError as exc:
+            logger.error("Не удалось прочитать секрет удалённого управления: %s", exc)
+            return ""
+
+    def remote_has_token(self):
+        try:
+            return self.credential_store.has_password(REMOTE_CREDENTIAL_KEY)
+        except CredentialError:
+            return False
+
+    def start_remote_control(self):
+        self.stop_remote_control()
+        token = self._remote_token()
+        client = RemoteControlClient(
+            self.remote_settings,
+            token,
+            self._remote_status_payload,
+            self._queue_remote_command,
+            self._queue_remote_access,
+            logger=logger,
+        )
+        self.remote_control_client = client
+        self.remote_access_allowed = bool(client.access_allowed)
+        if (
+            getattr(self, "remote_settings", RemoteSettings()).enabled
+            and not getattr(self, "remote_access_allowed", True)
+        ):
+            self.set_status_message("Доступ отключён администратором", force=True)
+        if client.start():
+            logger.info(
+                "Remote control enabled: device=%s hub=%s",
+                self.remote_settings.device_name,
+                self.remote_settings.hub_url,
+            )
+            return True
+        return False
+
+    def stop_remote_control(self):
+        client = self.remote_control_client
+        self.remote_control_client = None
+        if client is not None:
+            client.stop()
+
+    def configure_remote_control(self, *, enabled, hub_url, device_name, token=""):
+        if not self.remote_access_allowed and not enabled:
+            raise ValueError("Сначала откройте доступ к устройству из Remote Hub.")
+        normalized_url = str(hub_url or "").strip().rstrip("/")
+        if enabled and not normalized_url.lower().startswith(("http://", "https://")):
+            raise ValueError("Адрес Hub должен начинаться с http:// или https://")
+        supplied_token = str(token or "").strip()
+        if supplied_token:
+            if len(supplied_token) < 24:
+                raise ValueError("Секрет Hub должен содержать не менее 24 символов.")
+            self.credential_store.set_password(REMOTE_CREDENTIAL_KEY, supplied_token)
+        if enabled and not supplied_token and not self.remote_has_token():
+            raise ValueError("Введите секрет Remote Hub.")
+        self.remote_settings = save_remote_settings(
+            RemoteSettings(
+                enabled=bool(enabled),
+                hub_url=normalized_url,
+                device_id=self.remote_settings.device_id,
+                device_name=str(device_name or "").strip(),
+                heartbeat_seconds=self.remote_settings.heartbeat_seconds,
+            )
+        )
+        if not enabled:
+            self.remote_access_allowed = True
+        self.start_remote_control()
+        return self.get_remote_control_snapshot()
+
+    def get_remote_control_snapshot(self):
+        client = self.remote_control_client
+        if client is None:
+            return {
+                "configured": False,
+                "connected": False,
+                "last_error": "",
+                "last_checkin_at": 0.0,
+                "access_allowed": bool(self.remote_access_allowed),
+                "device_id": self.remote_settings.device_id,
+                "device_name": self.remote_settings.device_name,
+                "hub_url": self.remote_settings.hub_url,
+            }
+        return client.snapshot()
+
+    def get_remote_control_summary(self):
+        if not self.remote_settings.enabled:
+            return "Удалённо: выключено"
+        snapshot = self.get_remote_control_snapshot()
+        if not snapshot.get("access_allowed", True):
+            return "Удалённо: ДОСТУП ЗАКРЫТ"
+        if snapshot.get("connected"):
+            return f"Удалённо: онлайн · {self.remote_settings.device_name}"
+        error_message = str(snapshot.get("last_error") or "ожидание Hub")
+        return f"Удалённо: нет связи · {error_message}"
+
+    def check_remote_connection(self):
+        client = self.remote_control_client
+        if client is None or not client.configured:
+            raise ValueError("Удалённое управление не настроено.")
+        client.checkin_once()
+        return client.snapshot()
+
+    def _remote_status_payload(self):
+        current_account = self.get_current_account()
+        current_task = self.get_routine_task(self.current_routine_task_id)
+        return {
+            "app_version": APP_VERSION,
+            "state": "blocked" if not self.remote_access_allowed else self.state.value,
+            "status": self.status_message,
+            "account": current_account.get("name", "") if current_account else "",
+            "current_task": current_task.get("name", "") if current_task else "",
+            "adb_serial": self.adb_serial,
+        }
+
+    def _queue_remote_command(self, action):
+        if self.root:
+            self.gui_queue.put((self._execute_remote_command, (action,), {}))
+        else:
+            self._execute_remote_command(action)
+        return True
+
+    def _queue_remote_access(self, allowed):
+        self.remote_access_allowed = bool(allowed)
+        action = "allow" if allowed else "deny"
+        if self.root:
+            self.gui_queue.put((self._execute_remote_command, (action,), {}))
+        else:
+            self._execute_remote_command(action)
+
+    def _execute_remote_command(self, action):
+        action = str(action or "").strip().lower()
+        logger.info("Remote command received: %s", action)
+        if action == "deny":
+            self.remote_access_allowed = False
+            if self.is_running:
+                self.stop()
+            self.set_status_message("Доступ отключён администратором", force=True)
+            return True
+        if action == "allow":
+            self.remote_access_allowed = True
+            self.set_status_message("Удалённый доступ разрешён", force=True)
+            return True
+        if action == "stop":
+            if self.is_running:
+                self.stop()
+            return True
+        if action == "update":
+            return self.start_update()
+        if not self.remote_access_allowed:
+            logger.warning("Remote command ignored while access is denied: %s", action)
+            return True
+        if action == "start":
+            if not self.is_running:
+                self.start_routines()
+            return True
+        if action == "pause":
+            if self.is_running and not self.is_paused:
+                self.pause()
+            return True
+        if action == "resume":
+            if self.is_paused:
+                self.resume()
+            return True
+        logger.warning("Unknown remote command: %s", action)
+        return False
+
+    def start_update(self):
+        if self.remote_update_thread is not None and self.remote_update_thread.is_alive():
+            return True
+        self.remote_update_in_progress = True
+        self.set_status_message("Обновление: проверяю новый релиз", force=True)
+
+        def worker():
+            try:
+                staged = download_and_stage_update(APP_VERSION)
+                if staged is None:
+                    self.set_status_message(
+                        f"Установлена актуальная версия {APP_VERSION}",
+                        force=True,
+                    )
+                    return
+                self.set_status_message(
+                    f"Обновление {staged.version} загружено; установка",
+                    force=True,
+                )
+                if self.root:
+                    self.gui_queue.put((self._install_update, (staged,), {}))
+                else:
+                    raise UpdateError("Для установки требуется запущенный интерфейс BuZzbot.")
+            except Exception as exc:
+                logger.exception("Update failed")
+                self.set_status_message(f"Ошибка обновления: {exc}", force=True)
+            finally:
+                self.remote_update_in_progress = False
+
+        self.remote_update_thread = threading.Thread(
+            target=worker,
+            name="BuZzbotUpdate",
+            daemon=True,
+        )
+        self.remote_update_thread.start()
+        return True
+
+    def start_remote_update(self):
+        return self.start_update()
+
+    def _install_update(self, staged):
+        try:
+            launch_staged_update(staged, APP_DIR)
+        except UpdateError as exc:
+            self.set_status_message(f"Ошибка установки обновления: {exc}", force=True)
+            return False
+        if self.is_running:
+            self.stop()
+        self.stop_schedule_thread()
+        self.stop_remote_control()
+        self.set_status_message("Обновление подготовлено; перезапускаю BuZzbot", force=True)
+        self.root.after(500, self.root.destroy)
+        return True
+
+    def configure_report_cloud(self, *, enabled, sync_folder, device_name):
+        folder = str(sync_folder or "").strip()
+        if enabled:
+            if not folder:
+                raise ValueError("Выберите папку Yandex Disk, Google Drive или OneDrive.")
+            if not Path(folder).expanduser().is_dir():
+                raise FileNotFoundError(f"Облачная папка недоступна: {folder}")
+        self.report_cloud_settings = save_report_cloud_settings(
+            ReportCloudSettings(
+                enabled=bool(enabled),
+                sync_folder=folder,
+                device_name=str(device_name or "").strip(),
+            )
+        )
+        return self.report_cloud_settings
+
+    def create_and_upload_diagnostic_report(self):
+        report_path = self.create_diagnostic_report()
+        if not self.report_cloud_settings.configured:
+            return report_path, False
+        try:
+            uploaded_path = upload_report_to_sync_folder(
+                report_path,
+                self.report_cloud_settings,
+            )
+        except Exception:
+            logger.exception("Не удалось поместить диагностический отчёт в облачную папку")
+            self.set_status_message(
+                f"Отчёт сохранён локально: {report_path}",
+                force=True,
+            )
+            raise
+        logger.info("Диагностический отчёт помещён в облачную очередь: %s", uploaded_path)
+        self.set_status_message(f"Отчёт отправлен в облако: {uploaded_path.name}", force=True)
+        return uploaded_path, True
 
     def _set_state(self, new_state):
         self.state = new_state
@@ -1937,6 +2249,12 @@ class AutoClicker:
                         if isinstance(deadline, (int, float)) and float(deadline) > now
                     ][:self.routine_max_marches]
                     self.routine_march_context = str(data.get('routine_march_context') or "")
+                    raw_zombie_restore = data.get('zombie_level_restore', {})
+                    self.zombie_level_restore = {
+                        str(context): min(3, max(0, int(levels)))
+                        for context, levels in raw_zombie_restore.items()
+                        if isinstance(context, str) and isinstance(levels, (int, float))
+                    } if isinstance(raw_zombie_restore, dict) else {}
                     for task in self.routine_tasks:
                         self.groups.setdefault(effective_task_group(task), task.get("enabled", True))
                     self.groups.setdefault(SYSTEM_TEMPLATE_GROUP, True)
@@ -2113,6 +2431,7 @@ class AutoClicker:
                 'routine_max_marches': self.routine_max_marches,
                 'routine_march_deadlines': self.routine_march_deadlines,
                 'routine_march_context': self.routine_march_context,
+                'zombie_level_restore': self.zombie_level_restore,
                 'routine_next_run': self.routine_next_run,
                 'account_profiles': self.account_profiles,
                 'current_account_id': self.current_account_id,
@@ -2646,10 +2965,6 @@ class AutoClicker:
             if score >= float(image.get("observer_confidence", 0.70)) and score > best_score:
                 best_score = float(score)
                 best_count = int(image["march_count"])
-        if best_count is not None:
-            self.set_status_message(
-                self.tr('routine_marches', active=best_count, maximum=self.routine_max_marches)
-            )
         return best_count
 
     def reset_routine_marches(self):
@@ -2789,7 +3104,7 @@ class AutoClicker:
                     self.tr(
                         'routine_waiting',
                         name=self.get_routine_task_name(next_task),
-                        seconds=max(1, int(wait_seconds + 0.999)),
+                        wait=format_wait_duration(wait_seconds, self.lang),
                         active=active_marches,
                         maximum=self.routine_max_marches,
                     ),
@@ -2912,7 +3227,10 @@ class AutoClicker:
                 if is_radar_task_id(task.get("id")):
                     if frame is None:
                         frame, _frame_origin = self._capture_screen_bgr(force=True)
-                    if not radar_marker_has_notification(frame, blocker_bbox):
+                    if (
+                        radar_marker_requires_notification(image, task.get("id"))
+                        and not radar_marker_has_notification(frame, blocker_bbox)
+                    ):
                         logger.info(
                             "Idle completion ignores radar-like shape without notification: %s",
                             image.get("description"),
@@ -3119,6 +3437,7 @@ class AutoClicker:
         self.routine_idle_outside_since = 0.0
         self.routine_idle_recovery_attempted = False
         self.routine_radar_in_progress_seen = False
+        self.save_config()
 
     def _try_recover_current_routine_home(self, task):
         self.routine_home_recovery_attempted = True
@@ -3653,6 +3972,7 @@ class AutoClicker:
         self.routine_idle_guard_visible = False
         self.routine_idle_outside_since = 0.0
         self.routine_idle_recovery_attempted = False
+        self.save_config()
 
     def _defer_current_routine_no_squad(self, now=None):
         now = time.time() if now is None else float(now)
@@ -3691,6 +4011,7 @@ class AutoClicker:
         self.routine_idle_guard_visible = False
         self.routine_idle_outside_since = 0.0
         self.routine_idle_recovery_attempted = False
+        self.save_config()
 
     def _defer_current_routine_unavailable(self, reason, now=None):
         now = time.time() if now is None else float(now)
@@ -3740,6 +4061,7 @@ class AutoClicker:
         self.routine_idle_guard_visible = False
         self.routine_idle_outside_since = 0.0
         self.routine_idle_recovery_attempted = False
+        self.save_config()
 
     def start_normal(self):
         self.routine_mode = False
@@ -4242,6 +4564,10 @@ class AutoClicker:
                                 if (
                                     is_radar_task_id(current_routine_task.get("id"))
                                     and img_config.get("runtime_step") == "radar_marker"
+                                    and radar_marker_requires_notification(
+                                        img_config,
+                                        current_routine_task.get("id"),
+                                    )
                                 ):
                                     radar_frame, _radar_origin = self._capture_screen_bgr()
                                     if not radar_marker_has_notification(radar_frame, bbox):
@@ -5187,46 +5513,115 @@ class AutoClicker:
             return
 
         if action in {"zombie_search", "hivemind_search"}:
-            selected_level = None
-            if action == "hivemind_search":
-                selected_level = 7 if int(self._current_task_settings().get("level", 6) or 6) == 7 else 6
-                minus_x = int(round(target_x - 146 * display.scale_x))
-                plus_x = int(round(target_x + 144 * display.scale_x))
-                level_y = int(round(target_y - 76 * display.scale_y))
-                click = self.adb_client.tap if self.uses_adb else pyautogui.click
-                for _ in range(7):
-                    click(plus_x, level_y)
-                    self._interruptible_sleep(0.3)
-                    if self.stop_event.is_set() or self.stop_hotkey_pressed:
-                        return False
-                for _ in range(7 - selected_level):
-                    click(minus_x, level_y)
-                    self._interruptible_sleep(0.3)
-                    if self.stop_event.is_set() or self.stop_hotkey_pressed:
-                        return False
-                self.set_status_message(
-                    f"Коллективный разум: выбран уровень {selected_level}",
-                    force=True,
+            minus_x = int(round(target_x - 146 * display.scale_x))
+            plus_x = int(round(target_x + 144 * display.scale_x))
+            level_y = int(round(target_y - 76 * display.scale_y))
+            click = self.adb_client.tap if self.uses_adb else pyautogui.click
+
+            if action == "zombie_search":
+                settings = self._current_task_settings()
+                fallback_levels = zombie_fallback_levels(settings)
+                context = routine_march_context_key(
+                    self.input_backend,
+                    getattr(self, "adb_serial", "desktop"),
+                    getattr(self, "current_account_id", "default"),
                 )
-            if self.uses_adb:
-                self.adb_client.tap(int(round(target_x)), int(round(target_y)))
-                self._interruptible_sleep(2.0)
-                frame = self.adb_client.screenshot_bgr()
-            else:
-                pyautogui.click(target_x, target_y)
-                self._interruptible_sleep(2.0)
-                width, height = pyautogui.size()
+                restore_by_context = getattr(self, "zombie_level_restore", {})
+                self.zombie_level_restore = restore_by_context
+                pending_restore = min(3, max(0, int(restore_by_context.get(context, 0) or 0)))
+
+                if pending_restore:
+                    self.set_status_message(
+                        f"Зомби: возвращаю стартовый уровень (+{pending_restore})",
+                        force=True,
+                    )
+                    for _ in range(pending_restore):
+                        click(plus_x, level_y)
+                        self._interruptible_sleep(0.35)
+                        if self.stop_event.is_set() or self.stop_hotkey_pressed:
+                            return False
+                    restore_by_context.pop(context, None)
+                    self.save_config()
+
+                found_offset = None
+                for level_offset in range(fallback_levels + 1):
+                    if level_offset:
+                        click(minus_x, level_y)
+                        restore_by_context[context] = level_offset
+                        self.save_config()
+                        self._interruptible_sleep(0.4)
+                        if self.stop_event.is_set() or self.stop_hotkey_pressed:
+                            return False
+
+                    level_text = "сохранённом уровне" if level_offset == 0 else f"уровне -{level_offset}"
+                    self.set_status_message(f"Поиск зомби на {level_text}", force=True)
+                    click(int(round(target_x)), int(round(target_y)))
+                    self._interruptible_sleep(2.5)
+                    if self.stop_event.is_set() or self.stop_hotkey_pressed:
+                        return False
+                    self._invalidate_capture()
+                    search_location, _bbox, _confidence = self._locate_image(img_config)
+                    if search_location is None:
+                        found_offset = level_offset
+                        break
+                    if level_offset < fallback_levels:
+                        self.set_status_message(
+                            f"Зомби не найдены: понижаю уровень ({level_offset + 1}/{fallback_levels})",
+                            force=True,
+                        )
+
+                if found_offset is None:
+                    for _ in range(fallback_levels):
+                        click(plus_x, level_y)
+                        self._interruptible_sleep(0.35)
+                    restore_by_context.pop(context, None)
+                    self.save_config()
+                    img_config["last_used"] = time.time()
+                    self.set_status_message(
+                        f"Зомби не найдены на стартовом и {fallback_levels} нижних уровнях",
+                        force=True,
+                    )
+                    self._interruptible_sleep(img_config.get("delay", self.sleep_found))
+                    return True
+
+                if self.uses_adb:
+                    self.adb_client.tap(display.width // 2, int(round(display.height * 0.49)))
+                else:
+                    width, height = pyautogui.size()
+                    pyautogui.click(width // 2, int(round(height * 0.49)))
+                self._invalidate_capture()
+                img_config["last_used"] = time.time()
+                suffix = "" if found_offset == 0 else f" (-{found_offset} от стартового)"
+                self.set_status_message(f"Зомби найдены{suffix}", force=True)
+                self._interruptible_sleep(img_config.get("delay", self.sleep_found))
+                return True
+
+            selected_level = 7 if int(self._current_task_settings().get("level", 6) or 6) == 7 else 6
+            for _ in range(7):
+                click(plus_x, level_y)
+                self._interruptible_sleep(0.3)
+                if self.stop_event.is_set() or self.stop_hotkey_pressed:
+                    return False
+            for _ in range(7 - selected_level):
+                click(minus_x, level_y)
+                self._interruptible_sleep(0.3)
+                if self.stop_event.is_set() or self.stop_hotkey_pressed:
+                    return False
+            self.set_status_message(
+                f"Коллективный разум: выбран уровень {selected_level}",
+                force=True,
+            )
+            click(int(round(target_x)), int(round(target_y)))
+            self._interruptible_sleep(2.0)
             self._invalidate_capture()
-            no_result = None
             no_result_uid = str(img_config.get("no_result_template_uid") or "")
-            if no_result_uid:
-                no_result = next(
-                    (
-                        image for image in self.search_images
-                        if str(image.get("uid") or "") == no_result_uid
-                    ),
-                    None,
-                )
+            no_result = next(
+                (
+                    image for image in self.search_images
+                    if str(image.get("uid") or "") == no_result_uid
+                ),
+                None,
+            ) if no_result_uid else None
             if no_result is not None:
                 no_result_location, _bbox, _confidence = self._locate_image(no_result)
                 if no_result_location is not None:
@@ -5236,22 +5631,20 @@ class AutoClicker:
                         force=True,
                     )
                     self._interruptible_sleep(img_config.get("delay", self.sleep_found))
-                    return
+                    return True
             if self.uses_adb:
-                self.adb_client.tap(frame.shape[1] // 2, int(round(frame.shape[0] * 0.49)))
+                self.adb_client.tap(display.width // 2, int(round(display.height * 0.49)))
             else:
+                width, height = pyautogui.size()
                 pyautogui.click(width // 2, int(round(height * 0.49)))
             self._invalidate_capture()
             img_config["last_used"] = time.time()
-            if action == "zombie_search":
-                self.set_status_message("Поиск зомби: используется сохранённый в игре уровень", force=True)
-            else:
-                self.set_status_message(
-                    f"Поиск коллективного разума уровня {selected_level}",
-                    force=True,
-                )
+            self.set_status_message(
+                f"Поиск коллективного разума уровня {selected_level}",
+                force=True,
+            )
             self._interruptible_sleep(img_config.get("delay", self.sleep_found))
-            return
+            return True
 
         if action == "prize_start_or_prepare":
             if self.uses_adb:
@@ -8596,12 +8989,18 @@ def change_language(root, bot, new_lang):
 def on_closing(root, bot):
     if bot.is_running:
         bot.stop()
+    bot.stop_remote_control()
     bot.stop_schedule_thread()
     root.destroy()
 
 
 def main():
+    enable_windows_high_dpi()
     root = tk.Tk()
+    try:
+        root.tk.call("tk", "scaling", root.winfo_fpixels("1i") / 72.0)
+    except tk.TclError:
+        pass
     install_exception_logging(logger, root)
     logger.info("Запуск BuZzbot %s | frozen=%s | app_dir=%s", APP_VERSION, bool(getattr(sys, 'frozen', False)), APP_DIR)
     root.geometry("1000x1000")
