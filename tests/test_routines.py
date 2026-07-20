@@ -225,6 +225,24 @@ class RoutineTaskTests(unittest.TestCase):
         index = pick_due_task_index(tasks, {}, start_index=wood_index, now=100.0, active_marches=0, max_marches=5)
         self.assertEqual(tasks[index]["id"], "wood")
 
+    def test_resource_rotation_finishes_never_run_resources_before_repeating(self):
+        tasks = default_routine_tasks()
+        for task in tasks:
+            task["enabled"] = task["id"] in {"food", "wood", "metal", "oil"}
+        next_run = {"food": 95.0, "wood": 96.0, "metal": 0.0, "oil": 0.0}
+        food_index = next(index for index, task in enumerate(tasks) if task["id"] == "food")
+
+        index = pick_due_task_index(
+            tasks,
+            next_run,
+            start_index=food_index,
+            now=100.0,
+            active_marches=2,
+            max_marches=5,
+        )
+
+        self.assertEqual(tasks[index]["id"], "metal")
+
     def test_only_checked_task_is_scheduled(self):
         tasks = default_routine_tasks()
         for task in tasks:

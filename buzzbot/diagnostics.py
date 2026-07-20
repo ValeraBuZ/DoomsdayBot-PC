@@ -64,6 +64,7 @@ def create_diagnostic_report(
     config_path,
     runtime_state,
     adb_path=None,
+    adb_devices_text=None,
     ldconsole_path=None,
     output_dir=None,
     log_paths=None,
@@ -93,7 +94,10 @@ def create_diagnostic_report(
         if not resolved_path.is_file():
             missing.append(stored_path)
 
-    adb_devices = _run_capture([adb_path, "devices", "-l"]) if adb_path else "ADB не найден"
+    if adb_devices_text is not None:
+        adb_devices = str(adb_devices_text)
+    else:
+        adb_devices = _run_capture([adb_path, "devices", "-l"]) if adb_path else "ADB не найден"
     ldplayer_list = _run_capture([ldconsole_path, "list2"]) if ldconsole_path else "ldconsole.exe не найден"
     state = redact_config(runtime_state or {})
     lines = [

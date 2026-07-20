@@ -258,9 +258,42 @@ class AdbClient:
                 self._run(["kill-server"], timeout=10)
             except AdbError:
                 pass
-            self._run(["start-server"], timeout=10)
+            try:
+                self._run(["start-server"], timeout=10)
+            except AdbError:
+                if not self._terminate_stale_adb_processes():
+                    raise
+                self._run(["start-server"], timeout=10)
         finally:
             self.serial = original_serial
+
+    def _terminate_stale_adb_processes(self):
+        if os.name != "nt" or self.adb_path is None:
+            return False
+        try:
+            import psutil
+        except ImportError:
+            return False
+
+        target = os.path.normcase(os.path.realpath(str(self.adb_path)))
+        stale = []
+        for process in psutil.process_iter(("pid", "exe")):
+            try:
+                executable = process.info.get("exe")
+                if executable and os.path.normcase(os.path.realpath(executable)) == target:
+                    process.terminate()
+                    stale.append(process)
+            except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+                continue
+        if not stale:
+            return False
+        _gone, alive = psutil.wait_procs(stale, timeout=2.0)
+        for process in alive:
+            try:
+                process.kill()
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                continue
+        return True
 
     def ui_xml(self):
         """Return the current Android accessibility tree without leaving files behind."""

@@ -1409,6 +1409,9 @@ class AutoClicker:
             except Exception:
                 pass
         ldconsole = find_ldconsole(self.adb_path)
+        frame_age = None
+        if self._adb_frame_cache is not None and self._adb_frame_timestamp > 0:
+            frame_age = max(0.0, time.monotonic() - self._adb_frame_timestamp)
         runtime_state = {
             "bot_state": self.state.value,
             "input_backend": self.input_backend,
@@ -1416,7 +1419,8 @@ class AutoClicker:
             "adb_path": self.adb_path,
             "player_resolution": f"{self.player_width}x{self.player_height}",
             "resolution_scale": self.get_display_profile().percent_label,
-            "adb_connected": bool(self.adb_client and self.adb_client.is_available()),
+            "adb_cached_frame": self._adb_frame_cache is not None,
+            "adb_cached_frame_age_seconds": round(frame_age, 3) if frame_age is not None else None,
             "templates": len(self.search_images),
             "routine_tasks": len(self.routine_tasks),
             "active_marches": self.get_active_marches(),
@@ -1437,21 +1441,24 @@ class AutoClicker:
             for handler in logger.handlers
             if getattr(handler, "baseFilename", None)
         ]
-        screenshot_png = None
-        if self.adb_client and self.adb_client.is_available():
-            try:
-                frame = self.adb_client.screenshot_bgr()
-                encoded, payload = cv2.imencode(".png", frame)
-                if encoded:
-                    screenshot_png = payload.tobytes()
-            except Exception:
-                logger.exception("Не удалось добавить снимок экрана в диагностический отчёт")
+        screenshot_png = self._cached_diagnostic_screenshot_png()
+        logger.info(
+            "Создание диагностического отчёта из кеша; живые ADB-команды отключены, снимок=%s",
+            "добавлен" if screenshot_png else "пропущен",
+        )
         report_path = create_diagnostic_report(
             APP_DIR,
             app_version=APP_VERSION,
             config_path=CONFIG_FILE,
             runtime_state=runtime_state,
-            adb_path=self.adb_path or None,
+            # A live `adb devices` call can contend with the capture loop and
+            # wedge LDPlayer's ADB server. Runtime state and logs already carry
+            # the connection details needed for diagnostics.
+            adb_path=None,
+            adb_devices_text=(
+                "Живая проверка пропущена, чтобы не прерывать работу ADB. "
+                f"Настроенный адрес: {self.adb_serial}"
+            ),
             ldconsole_path=ldconsole,
             log_paths=log_paths,
             screenshot_png=screenshot_png,
@@ -1459,6 +1466,29 @@ class AutoClicker:
         logger.info("Диагностический отчёт создан: %s", report_path)
         self.set_status_message(self.tr('report_created', path=report_path), force=True)
         return report_path
+
+    def _cached_diagnostic_screenshot_png(self):
+        if not self._adb_capture_lock.acquire(blocking=False):
+            return None
+        try:
+            if self._adb_frame_cache is None:
+                return None
+            frame = self._adb_frame_cache.copy()
+        finally:
+            self._adb_capture_lock.release()
+
+        try:
+            encoded, payload = cv2.imencode(
+                ".png",
+                frame,
+                [cv2.IMWRITE_PNG_COMPRESSION, 1],
+            )
+        except Exception:
+            logger.exception("Не удалось закодировать кешированный снимок для отчёта")
+            return None
+        if not encoded:
+            return None
+        return payload.tobytes()
 
     def _capture_adb_frame(self, force=False):
         now = time.monotonic()
@@ -8994,6 +9024,11 @@ def on_closing(root, bot):
     root.destroy()
 
 
+def should_autostart_routines(argv=None):
+    args = sys.argv[1:] if argv is None else argv
+    return any(str(arg).strip().lower() == "--autostart" for arg in args)
+
+
 def main():
     enable_windows_high_dpi()
     root = tk.Tk()
@@ -9063,6 +9098,10 @@ def main():
     root.open_group_schedule = lambda: GroupScheduleDialog(root, bot).show()
 
     build_compact_ui(root, bot)
+
+    if should_autostart_routines():
+        logger.info("Autostart requested: starting selected routine tasks")
+        root.after(1500, bot.start_routines)
 
     root.protocol("WM_DELETE_WINDOW", lambda: on_closing(root, bot))
     root.mainloop()

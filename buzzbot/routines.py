@@ -1777,7 +1777,7 @@ def is_task_effectively_enabled(task):
 
 
 def pick_due_task_index(tasks, next_run, start_index, now, active_marches=0, max_marches=5):
-    """Pick a due task by priority and cyclic order without exceeding marches."""
+    """Pick the longest-waiting due task in the highest-priority band."""
     if not tasks:
         return None
     start_index = int(start_index or 0) % len(tasks)
@@ -1789,9 +1789,10 @@ def pick_due_task_index(tasks, next_run, start_index, now, active_marches=0, max
             continue
         if task.get("uses_march", False) and int(active_marches) >= int(max_marches):
             continue
-        if float(next_run.get(task["id"], 0.0)) <= float(now):
-            candidates.append((int(task.get("priority", 100)), offset, index))
-    return min(candidates)[2] if candidates else None
+        deadline = float(next_run.get(task["id"], 0.0))
+        if deadline <= float(now):
+            candidates.append((int(task.get("priority", 100)), deadline, offset, index))
+    return min(candidates)[3] if candidates else None
 
 
 def next_due_task(tasks, next_run, now, active_marches=0, max_marches=5):

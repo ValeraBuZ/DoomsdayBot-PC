@@ -236,6 +236,34 @@ class AdbClientTests(unittest.TestCase):
         self.assertEqual(calls[1][0], ["adb.exe", "start-server"])
         self.assertEqual(client.serial, "emulator-5556")
 
+    def test_restart_server_force_clears_matching_adb_after_start_timeout(self):
+        calls = []
+        start_attempts = 0
+
+        def runner(command, **kwargs):
+            nonlocal start_attempts
+            calls.append((command, kwargs))
+            if command[-1] == "start-server":
+                start_attempts += 1
+                if start_attempts == 1:
+                    raise subprocess.TimeoutExpired(command, 10)
+            return FakeResult()
+
+        client = self.make_client(runner)
+        with patch.object(client, "_terminate_stale_adb_processes", return_value=True) as terminate:
+            client.restart_server()
+
+        terminate.assert_called_once_with()
+        self.assertEqual(
+            [call[0] for call in calls],
+            [
+                ["adb.exe", "kill-server"],
+                ["adb.exe", "start-server"],
+                ["adb.exe", "start-server"],
+            ],
+        )
+        self.assertEqual(client.serial, "emulator-5556")
+
     def test_connect_uses_tcp_address_without_selected_serial(self):
         calls = []
 
