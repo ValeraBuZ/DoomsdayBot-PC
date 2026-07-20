@@ -7,6 +7,8 @@ import uuid
 
 
 PROFILE_NAMESPACE = uuid.UUID("7d37a3a8-c963-49ef-9bf2-e3daecf85c48")
+RADAR_TASK_IDS = ("radar_rewards", "radar_quick", "radar_marches")
+LEGACY_RADAR_TASK_ID = "radar"
 PRIZE_HUNT_SAFE_EXIT_UID = str(
     uuid.uuid5(PROFILE_NAMESPACE, "prize_hunt:safe_exit")
 )
@@ -48,6 +50,18 @@ STRICT_RUNTIME_SEQUENCES = {
         "confirm_rally",
         "march",
     ),
+}
+TRAINING_QUEUE_ORDINALS = {
+    "train_infantry": 1,
+    "train_riders": 2,
+    "train_shooters": 3,
+    "train_vehicles": 4,
+}
+TRAINING_RADIAL_TARGETS = {
+    "train_infantry": (758, 487),
+    "train_riders": (758, 487),
+    "train_shooters": (758, 487),
+    "train_vehicles": (780, 465),
 }
 RADAR_STEP_PRIORITIES = {
     "radar_screen_guard": 1,
@@ -97,6 +111,10 @@ RADAR_STEP_PRIORITIES = {
     "task_special_current": 85,
     "task_fist_current": 86,
 }
+LEGACY_RADAR_TEMPLATE_UIDS = frozenset(
+    str(uuid.uuid5(PROFILE_NAMESPACE, f"{LEGACY_RADAR_TASK_ID}:{step_id}"))
+    for step_id in RADAR_STEP_PRIORITIES
+)
 
 RADAR_CARD_RUNTIME_STEPS = frozenset(
     {
@@ -118,7 +136,7 @@ DEFAULT_ROUTINE_TASKS = (
         "uses_march": False,
         "priority": 1,
         "interval_minutes": 1440.0,
-        "timeout_seconds": 90.0,
+        "timeout_seconds": 330.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
         "settings": {},
@@ -259,9 +277,9 @@ DEFAULT_ROUTINE_TASKS = (
         },
     },
     {
-        "id": "radar",
-        "name": "Задания радарной станции",
-        "group": "Радарная станция",
+        "id": "radar_rewards",
+        "name": "Радар: награды",
+        "group": "Радар - награды",
         "category": "daily",
         "enabled": False,
         "uses_march": False,
@@ -271,14 +289,64 @@ DEFAULT_ROUTINE_TASKS = (
         "march_duration_minutes": 30.0,
         "completion_uid": "",
         "complete_when_idle": True,
-        "idle_confirmations": 3,
+        "idle_confirmations": 2,
+        "manual_screen_required": True,
         "idle_completion_guard_uid": str(
-            uuid.uuid5(PROFILE_NAMESPACE, "radar:radar_screen_guard")
+            uuid.uuid5(PROFILE_NAMESPACE, "radar_rewards:radar_screen_guard")
         ),
         "settings": {
-            "max_tasks": 0,
             "fixed_utc_hours": [0, 12],
             "in_progress_retry_minutes": 5,
+            "visual_fallback": False,
+        },
+    },
+    {
+        "id": "radar_quick",
+        "name": "Радар: быстрые задания",
+        "group": "Радар - быстрые задания",
+        "category": "daily",
+        "enabled": False,
+        "uses_march": False,
+        "priority": 31,
+        "interval_minutes": 720.0,
+        "timeout_seconds": 12.0,
+        "march_duration_minutes": 30.0,
+        "completion_uid": "",
+        "complete_when_idle": True,
+        "idle_confirmations": 2,
+        "manual_screen_required": True,
+        "idle_completion_guard_uid": str(
+            uuid.uuid5(PROFILE_NAMESPACE, "radar_quick:radar_screen_guard")
+        ),
+        "settings": {
+            "fixed_utc_hours": [0, 12],
+            "in_progress_retry_minutes": 5,
+            "visual_fallback": False,
+        },
+    },
+    {
+        "id": "radar_marches",
+        "name": "Радар: задания с отрядом",
+        "group": "Радар - задания с отрядом",
+        "category": "daily",
+        "enabled": False,
+        "uses_march": True,
+        "priority": 32,
+        "interval_minutes": 720.0,
+        "timeout_seconds": 12.0,
+        "march_duration_minutes": 30.0,
+        "march_completion_runtime_step": "radar_march",
+        "completion_uid": "",
+        "complete_when_idle": True,
+        "idle_confirmations": 2,
+        "manual_screen_required": True,
+        "idle_completion_guard_uid": str(
+            uuid.uuid5(PROFILE_NAMESPACE, "radar_marches:radar_screen_guard")
+        ),
+        "settings": {
+            "fixed_utc_hours": [0, 12],
+            "in_progress_retry_minutes": 5,
+            "visual_fallback": False,
         },
     },
     {
@@ -293,10 +361,11 @@ DEFAULT_ROUTINE_TASKS = (
         "timeout_seconds": 15.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
+        "empty_home_is_success": True,
         "settings": {
             "branch": "off",
             "use_speedups": False,
-            "max_lab_checks": 1,
+            "max_lab_checks": 2,
         },
     },
     {
@@ -346,7 +415,7 @@ DEFAULT_ROUTINE_TASKS = (
         "timeout_seconds": 12.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
-        "settings": {"highest_tier": True, "collect_finished": True, "max_queue_checks": 4},
+        "settings": {"highest_tier": True, "collect_finished": True, "max_queue_checks": 5},
     },
     {
         "id": "train_riders",
@@ -360,7 +429,7 @@ DEFAULT_ROUTINE_TASKS = (
         "timeout_seconds": 12.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
-        "settings": {"highest_tier": True, "collect_finished": True, "max_queue_checks": 4},
+        "settings": {"highest_tier": True, "collect_finished": True, "max_queue_checks": 5},
     },
     {
         "id": "train_shooters",
@@ -374,7 +443,7 @@ DEFAULT_ROUTINE_TASKS = (
         "timeout_seconds": 12.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
-        "settings": {"highest_tier": True, "collect_finished": True, "max_queue_checks": 4},
+        "settings": {"highest_tier": True, "collect_finished": True, "max_queue_checks": 5},
     },
     {
         "id": "train_vehicles",
@@ -388,7 +457,7 @@ DEFAULT_ROUTINE_TASKS = (
         "timeout_seconds": 12.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
-        "settings": {"highest_tier": True, "collect_finished": True, "max_queue_checks": 4},
+        "settings": {"highest_tier": True, "collect_finished": True, "max_queue_checks": 5},
     },
     {
         "id": "prize_hunt",
@@ -506,9 +575,6 @@ TASK_SETTING_SPECS = {
         {"key": "max_project_checks", "label": "Проектов за цикл", "kind": "int", "min": 1, "max": 20},
         {"key": "avoid_gems", "label": "Не тратить алмазы", "kind": "bool"},
     ),
-    "radar": (
-        {"key": "max_tasks", "label": "Лимит заданий (0 = до конца)", "kind": "int", "min": 0, "max": 100},
-    ),
     "research": (
         {
             "key": "branch",
@@ -559,6 +625,10 @@ def default_routine_tasks():
     return deepcopy(list(DEFAULT_ROUTINE_TASKS))
 
 
+def is_radar_task_id(task_id):
+    return str(task_id or "") in {*RADAR_TASK_IDS, LEGACY_RADAR_TASK_ID}
+
+
 def task_setting_specs(task_id):
     return deepcopy(list(TASK_SETTING_SPECS.get(task_id, ())))
 
@@ -568,6 +638,11 @@ def runtime_step_is_ready(image, completed_steps):
     completed = {str(step) for step in completed_steps}
     own_step = str(image.get("runtime_step") or "")
     if own_step and own_step in completed and not image.get("repeat_runtime_step", False):
+        return False
+    disabled_after = image.get("disabled_after_runtime_steps", ())
+    if isinstance(disabled_after, str):
+        disabled_after = (disabled_after,)
+    if any(str(step) in completed for step in disabled_after if str(step)):
         return False
     required = image.get("requires_runtime_steps", ())
     if isinstance(required, str):
@@ -693,6 +768,7 @@ def routine_home_recovery_due(task, had_action, attempted, idle_seconds):
     }
     return bool(
         can_recover
+        and not task.get("manual_screen_required", False)
         and not had_action
         and not attempted
         and float(idle_seconds) >= recovery_delay
@@ -718,8 +794,26 @@ def routine_idle_screen_recovery_due(
     )
 
 
+def routine_missing_followup_is_unavailable(task, completed_steps, idle_seconds):
+    """Detect an opened feature whose optional event entry is not present."""
+    task_id = str(task.get("id") or "")
+    completed = {str(step) for step in completed_steps}
+    timeout = max(1.0, float(task.get("timeout_seconds", 8.0) or 8.0))
+    if task_id == "processing_contest":
+        if "open_refinery" not in completed or "open_contest" in completed:
+            return False
+        return float(idle_seconds) >= timeout
+    if task_id == "gathering_boost":
+        has_category = "boost_category" in completed
+        has_item = bool({"boost_8h", "boost_24h", "use"}.intersection(completed))
+        return has_category and not has_item and float(idle_seconds) >= timeout
+    return False
+
+
 def routine_requires_settlement(task):
     """Return whether a task must run inside the player's settlement."""
+    if task.get("manual_screen_required", False):
+        return False
     return str(task.get("category") or "") in {
         "daily",
         "development",
@@ -1040,6 +1134,17 @@ def upgrade_strict_runtime_metadata(images, tasks):
                 image["dynamic_building_search"] = True
                 image["limit_key"] = "max_queue_checks"
                 image["defer_when_limit_reached"] = True
+                image["action"] = "select_training_queue"
+                image["training_queue_ordinal"] = TRAINING_QUEUE_ORDINALS[task_id]
+                image["training_radial_target"] = list(
+                    TRAINING_RADIAL_TARGETS[task_id]
+                )
+                # The active queue icon loses its sleeping marker. Its stable
+                # core still scores about 0.82 on LDPlayer at 1280x720.
+                image["confidence"] = min(
+                    0.80,
+                    float(image.get("confidence", 0.88) or 0.88),
+                )
             image.pop("requires_runtime_steps", None)
             selected_training_building = (
                 task_id.startswith("train_") and step_id == "building"
@@ -1054,9 +1159,24 @@ def upgrade_strict_runtime_metadata(images, tasks):
     if research_queue is not None:
         research_queue.update(
             {
+                "action": "select_research_queue",
                 "limit_key": "max_lab_checks",
                 "defer_when_limit_reached": True,
             }
+        )
+        upgraded += 1
+
+    for step_id in ("lab", "lab_alt_1"):
+        research_lab = images_by_uid.get(
+            str(uuid.uuid5(PROFILE_NAMESPACE, f"research:{step_id}"))
+        )
+        if research_lab is None:
+            continue
+        # Building labels vary slightly between levels and animated overlays.
+        # The selected laboratory remains distinctive inside the research group.
+        research_lab["confidence"] = min(
+            0.84,
+            float(research_lab.get("confidence", 0.88) or 0.88),
         )
         upgraded += 1
 
@@ -1113,9 +1233,17 @@ def upgrade_strict_runtime_metadata(images, tasks):
         if task.get("id") == "heal":
             task["empty_home_is_success"] = True
         if str(task.get("id") or "").startswith("train_"):
-            task.setdefault("settings", {}).setdefault("max_queue_checks", 4)
+            settings = task.setdefault("settings", {})
+            settings["max_queue_checks"] = max(
+                5,
+                int(settings.get("max_queue_checks", 0) or 0),
+            )
         if task.get("id") == "research":
-            task.setdefault("settings", {}).setdefault("max_lab_checks", 1)
+            settings = task.setdefault("settings", {})
+            settings["max_lab_checks"] = max(
+                2,
+                int(settings.get("max_lab_checks", 0) or 0),
+            )
         if task.get("id") == "mail_rewards":
             task["completion_runtime_step"] = "claim_reports"
 
@@ -1128,6 +1256,15 @@ def upgrade_strict_runtime_metadata(images, tasks):
     if first_daily_scroll is not None:
         first_daily_scroll["requires_runtime_steps"] = ["open_tasks"]
         first_daily_scroll["implied_runtime_steps"] = ["select_daily"]
+        upgraded += 1
+
+    claim_main = images_by_uid.get(
+        str(uuid.uuid5(PROFILE_NAMESPACE, "completed_tasks:claim_main"))
+    )
+    if claim_main is not None:
+        # Both tabs use the same claim button. After the daily tab opens, the
+        # match must advance claim_daily instead of repeating claim_main.
+        claim_main["disabled_after_runtime_steps"] = ["select_daily"]
         upgraded += 1
     return upgraded
 
@@ -1162,6 +1299,22 @@ def upgrade_prize_hunt_metadata(images, tasks):
             {
                 "action": "prize_prepare",
                 "description": "Заполнить отряд для охоты",
+            }
+        )
+        upgraded += 1
+
+    no_deployable_squad = images_by_uid.get(
+        str(uuid.uuid5(PROFILE_NAMESPACE, "prize_hunt:no_deployable_squad"))
+    )
+    if no_deployable_squad is not None:
+        no_deployable_squad.update(
+            {
+                "description": "Нет развертываемого отряда для охоты",
+                "defer_routine_reason": "нет развертываемого отряда",
+                "confidence": min(
+                    0.82,
+                    float(no_deployable_squad.get("confidence", 0.88) or 0.88),
+                ),
             }
         )
         upgraded += 1
@@ -1211,6 +1364,7 @@ def upgrade_prize_hunt_metadata(images, tasks):
         "enter": ("event",),
         "open_squad": ("enter",),
         "prepare": ("open_squad",),
+        "no_deployable_squad": ("prepare", "open_squad"),
         "deploy": ("prepare",),
         "safe_exit_current": ("deploy",),
         "safe_exit": ("safe_exit_current",),
@@ -1241,6 +1395,14 @@ def upgrade_prize_hunt_metadata(images, tasks):
         # first pass through prize_prepare. Both states are valid.
         deploy_image["requires_runtime_steps"] = ["prepare", "open_squad"]
         deploy_image["runtime_step_mode"] = "any"
+
+    if no_deployable_squad is not None:
+        # The game can reject either the initial squad setup or the final
+        # deployment when this account has no event-compatible squad.
+        no_deployable_squad["requires_runtime_steps"] = ["prepare", "open_squad"]
+        no_deployable_squad["runtime_step_mode"] = "any"
+        no_deployable_squad["allow_runtime_resume"] = True
+        no_deployable_squad["routine_priority"] = 1
 
     outcome_steps = ("safe_exit_current", "safe_exit", "again")
     for step_id in outcome_steps:
@@ -1278,87 +1440,86 @@ def upgrade_prize_hunt_metadata(images, tasks):
 
 
 def upgrade_radar_runtime_metadata(images, tasks):
-    """Prioritize the current radar screen before selecting another map marker."""
+    """Apply the guarded radar flow to every independently selectable mode."""
     images_by_uid = {str(image.get("uid") or ""): image for image in images}
     upgraded = 0
-    for step_id, priority in RADAR_STEP_PRIORITIES.items():
-        uid = str(uuid.uuid5(PROFILE_NAMESPACE, f"radar:{step_id}"))
-        image = images_by_uid.get(uid)
-        if image is None:
-            continue
-        image["routine_priority"] = priority
-        if step_id == "open_radar":
-            image["requires_settlement_screen"] = True
-        if step_id == "wait_in_progress":
-            image["action"] = "radar_defer_in_progress"
-            image["delay"] = 0.5
-        if step_id == "march":
-            image["confirm_disappears"] = True
-            image["confirms_radar_marker"] = True
-        # Radar is complete only after no actionable templates remain. A positive
-        # max_tasks value is retained as a setting for compatibility, not as an
-        # early-completion trigger.
-        if image.get("limit_key") == "max_tasks":
-            image.pop("limit_key", None)
-        if step_id.startswith("task_"):
-            image["runtime_step"] = "radar_marker"
-            image["repeat_runtime_step"] = True
-            image["prevents_idle_completion"] = True
-            # Marker colors vary slightly between accounts. The red notification
-            # dot plus the existing color/ORB checks still guards the click.
-            image["confidence"] = min(0.68, float(image.get("confidence", 0.82)))
-            image["orb_match_threshold"] = min(
-                3,
-                int(image.get("orb_match_threshold", 3) or 3),
-            )
-            # Retry markers that did not open, then extend the block only after
-            # the final deployment button confirms a real radar march.
-            image["allow_repeat"] = True
-            image["block_seconds"] = 8.0
-        elif step_id in {"open_any_task", "open_supply", "open_car", "open_zombie"}:
-            image["runtime_step"] = "radar_forward"
-            image["repeat_runtime_step"] = True
-        elif step_id in {
-            "collect_completed",
-            "collect_supply",
-            "attack_zombie",
-            "rescue_survivors",
-            "transport_supplies",
-            "confirm_transport",
-        }:
-            image["runtime_step"] = "radar_action"
-            image["repeat_runtime_step"] = True
-            image["requires_runtime_steps"] = ["radar_forward"]
-            image["delay"] = max(1.5, float(image.get("delay", 0.0) or 0.0))
-        elif step_id == "create_squad":
-            image["runtime_step"] = "radar_squad"
-            image["requires_runtime_steps"] = ["radar_action"]
-            image["allow_runtime_resume"] = True
-        elif step_id == "march":
-            image["runtime_step"] = "radar_march"
-            image["requires_runtime_steps"] = ["radar_squad", "radar_action"]
-            image["runtime_step_mode"] = "any"
-            image["allow_runtime_resume"] = True
-        elif step_id == "close_region_search":
-            image["requires_runtime_steps"] = ["radar_action", "radar_march"]
-            image["runtime_step_mode"] = "any"
-        elif step_id == "return_shelter":
-            image["action"] = "radar_return_shelter"
-            image["requires_runtime_steps"] = ["radar_action", "radar_march"]
-            image["runtime_step_mode"] = "any"
-        upgraded += 1
+    radar_tasks = [task for task in tasks if is_radar_task_id(task.get("id"))]
+    for task in radar_tasks:
+        task_id = str(task.get("id") or "")
+        for step_id, priority in RADAR_STEP_PRIORITIES.items():
+            uid = str(uuid.uuid5(PROFILE_NAMESPACE, f"{task_id}:{step_id}"))
+            image = images_by_uid.get(uid)
+            if image is None:
+                continue
+            image["routine_priority"] = priority
+            if step_id == "open_radar":
+                image["enabled"] = False
+            if step_id == "wait_in_progress":
+                image["action"] = "radar_defer_in_progress"
+                image["delay"] = 0.5
+            if step_id == "march":
+                image["confirm_disappears"] = True
+                image["confirms_radar_marker"] = True
+            if image.get("limit_key") == "max_tasks":
+                image.pop("limit_key", None)
+            if step_id.startswith("task_"):
+                image["runtime_step"] = "radar_marker"
+                image["repeat_runtime_step"] = True
+                image["prevents_idle_completion"] = True
+                image["confidence"] = min(0.68, float(image.get("confidence", 0.82)))
+                image["orb_match_threshold"] = min(
+                    3,
+                    int(image.get("orb_match_threshold", 3) or 3),
+                )
+                image["allow_repeat"] = True
+                image["block_seconds"] = 8.0
+            elif step_id in {"open_any_task", "open_supply", "open_car", "open_zombie"}:
+                image["runtime_step"] = "radar_forward"
+                image["repeat_runtime_step"] = True
+            elif step_id in {
+                "collect_completed",
+                "collect_supply",
+                "attack_zombie",
+                "rescue_survivors",
+                "transport_supplies",
+                "confirm_transport",
+            }:
+                image["runtime_step"] = "radar_action"
+                image["repeat_runtime_step"] = True
+                image["requires_runtime_steps"] = ["radar_forward"]
+                image["delay"] = max(1.5, float(image.get("delay", 0.0) or 0.0))
+            elif step_id == "create_squad":
+                image["runtime_step"] = "radar_squad"
+                image["requires_runtime_steps"] = ["radar_action"]
+                image["allow_runtime_resume"] = True
+            elif step_id == "march":
+                image["runtime_step"] = "radar_march"
+                image["requires_runtime_steps"] = ["radar_squad", "radar_action"]
+                image["runtime_step_mode"] = "any"
+                image["allow_runtime_resume"] = True
+            elif step_id == "close_region_search":
+                image["requires_runtime_steps"] = ["radar_action", "radar_march"]
+                image["runtime_step_mode"] = "any"
+            elif step_id == "return_shelter":
+                image["action"] = "radar_return_shelter"
+                image["requires_runtime_steps"] = ["radar_action", "radar_march"]
+                image["runtime_step_mode"] = "any"
+                image["completes_routine"] = True
+            upgraded += 1
 
-    for task in tasks:
-        if task.get("id") == "radar":
-            task["timeout_seconds"] = max(12.0, float(task.get("timeout_seconds", 0.0) or 0.0))
-            task["interval_minutes"] = 720.0
-            task["complete_when_idle"] = True
-            task["idle_confirmations"] = max(3, int(task.get("idle_confirmations", 0) or 0))
-            task["idle_completion_guard_uid"] = str(
-                uuid.uuid5(PROFILE_NAMESPACE, "radar:radar_screen_guard")
-            )
-            task.setdefault("settings", {})["fixed_utc_hours"] = [0, 12]
-            task["settings"].setdefault("in_progress_retry_minutes", 5)
+    for task in radar_tasks:
+        task_id = str(task.get("id") or "")
+        task["timeout_seconds"] = max(12.0, float(task.get("timeout_seconds", 0.0) or 0.0))
+        task["interval_minutes"] = 720.0
+        task["complete_when_idle"] = True
+        task["manual_screen_required"] = True
+        task["idle_confirmations"] = max(2, int(task.get("idle_confirmations", 0) or 0))
+        task["idle_completion_guard_uid"] = str(
+            uuid.uuid5(PROFILE_NAMESPACE, f"{task_id}:radar_screen_guard")
+        )
+        task.setdefault("settings", {})["fixed_utc_hours"] = [0, 12]
+        task["settings"].setdefault("in_progress_retry_minutes", 5)
+        task["settings"]["visual_fallback"] = False
     return upgraded
 
 
@@ -1423,7 +1584,11 @@ def _normalize_task(source, default):
         "complete_when_idle": bool(
             source.get("complete_when_idle", default.get("complete_when_idle", False))
         ),
-        "empty_home_is_success": task_id in {"fence_survivors", "vip_rewards"} or bool(
+        "empty_home_is_success": task_id in {
+            "fence_survivors",
+            "vip_rewards",
+            "research",
+        } or bool(
             source.get(
                 "empty_home_is_success",
                 default.get("empty_home_is_success", False),
@@ -1459,13 +1624,18 @@ def normalize_routine_tasks(raw_tasks):
 
     normalized = []
     built_in_ids = {item["id"] for item in DEFAULT_ROUTINE_TASKS}
+    retired_built_in_ids = {LEGACY_RADAR_TASK_ID}
     for default in DEFAULT_ROUTINE_TASKS:
         source = raw_by_id.get(default["id"], {})
         normalized.append(_normalize_task(source, default))
 
     if isinstance(raw_tasks, list):
         for source in raw_tasks:
-            if not isinstance(source, dict) or source.get("id") in built_in_ids:
+            if (
+                not isinstance(source, dict)
+                or source.get("id") in built_in_ids
+                or source.get("id") in retired_built_in_ids
+            ):
                 continue
             fallback = {
                 "id": str(source.get("id") or "custom"),
@@ -1539,7 +1709,7 @@ def next_run_after_finish(task, now):
 
 def next_run_after_radar_pass(task, now, has_in_progress=False):
     """Retry deferred radar marches soon, otherwise wait for the fixed reset."""
-    if task.get("id") == "radar" and has_in_progress:
+    if is_radar_task_id(task.get("id")) and has_in_progress:
         retry_minutes = _positive_float(
             task.get("settings", {}).get("in_progress_retry_minutes"),
             5.0,

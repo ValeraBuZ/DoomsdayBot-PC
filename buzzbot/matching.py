@@ -24,6 +24,113 @@ def _reference_frame(frame_bgr):
     return resized, width / REFERENCE_WIDTH, height / REFERENCE_HEIGHT
 
 
+def detect_blank_webview_close_target(frame_bgr):
+    """Find the close button on the blank Google/IGG login webview."""
+    frame, scale_x, scale_y = _reference_frame(frame_bgr)
+    if frame is None:
+        return None
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    if float(np.mean(gray >= 220)) < 0.97:
+        return None
+
+    close_region = gray[8:62, 1208:1274]
+    dark_ratio = float(np.mean(close_region < 190))
+    if not 0.02 <= dark_ratio <= 0.25:
+        return None
+
+    return int(round(1246 * scale_x)), int(round(34 * scale_y))
+
+
+def detect_login_session_expired_ok_target(frame_bgr):
+    """Find the wide yellow OK button in the expired-login dialog."""
+    frame, scale_x, scale_y = _reference_frame(frame_bgr)
+    if frame is None:
+        return None
+
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(
+        hsv,
+        np.array([15, 60, 120], dtype=np.uint8),
+        np.array([40, 255, 255], dtype=np.uint8),
+    )
+    mask[:400, :] = 0
+    mask[600:, :] = 0
+    mask[:, :300] = 0
+    mask[:, 980:] = 0
+
+    candidates = []
+    contours, _hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours:
+        x, y, width, height = cv2.boundingRect(contour)
+        aspect = width / float(height) if height else 0.0
+        center_x = x + width / 2.0
+        center_y = y + height / 2.0
+        if (
+            180 <= width <= 380
+            and 30 <= height <= 80
+            and 3.5 <= aspect <= 9.0
+            and 500 <= center_x <= 780
+            and 450 <= center_y <= 560
+        ):
+            candidates.append((width * height, center_x, center_y))
+    if not candidates:
+        return None
+
+    _area, center_x, center_y = max(candidates)
+    return int(round(center_x * scale_x)), int(round(center_y * scale_y))
+
+
+def detect_collective_tutorial_continue_target(frame_bgr):
+    """Detect the guided collective-mind overlay that blocks the map."""
+    frame, scale_x, scale_y = _reference_frame(frame_bgr)
+    if frame is None:
+        return None
+
+    bottom_gray = cv2.cvtColor(frame[560:720], cv2.COLOR_BGR2GRAY)
+    dark_ratio = float(np.count_nonzero(bottom_gray < 85)) / float(bottom_gray.size)
+    # Each page replaces the guide character, but the dialogue itself stays
+    # strongly dimmed and is distinct from the ordinary map HUD.
+    if dark_ratio < 0.82:
+        return None
+
+    return int(round(640 * scale_x)), int(round(650 * scale_y))
+
+
+def detect_prize_hunt_squad_confirmation_target(frame_bgr):
+    """Detect the squad/preset mismatch confirmation shown inside prize hunt."""
+    frame, scale_x, scale_y = _reference_frame(frame_bgr)
+    if frame is None:
+        return None
+
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    title = hsv[160:215, 315:965]
+    panel = hsv[215:475, 350:930]
+    confirm = hsv[480:535, 640:930]
+
+    brown_title = (
+        (title[:, :, 0] <= 30)
+        & (title[:, :, 1] >= 30)
+        & (title[:, :, 2] >= 40)
+        & (title[:, :, 2] <= 150)
+    )
+    light_panel = (panel[:, :, 1] < 100) & (panel[:, :, 2] >= 110)
+    yellow_confirm = (
+        (confirm[:, :, 0] >= 8)
+        & (confirm[:, :, 0] <= 42)
+        & (confirm[:, :, 1] >= 80)
+        & (confirm[:, :, 2] >= 130)
+    )
+    if (
+        float(np.mean(brown_title)) < 0.55
+        or float(np.mean(light_panel)) < 0.65
+        or float(np.mean(yellow_confirm)) < 0.45
+    ):
+        return None
+
+    return int(round(784 * scale_x)), int(round(508 * scale_y))
+
+
 def detect_alliance_marked_project_target(frame_bgr):
     """Find the alliance technology card carrying the compact red marker."""
     frame, scale_x, scale_y = _reference_frame(frame_bgr)

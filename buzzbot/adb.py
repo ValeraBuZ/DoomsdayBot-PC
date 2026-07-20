@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -126,6 +127,31 @@ class AdbClient:
 
     def keyevent(self, key_code):
         self._run(["shell", "input", "keyevent", int(key_code)], timeout=5)
+
+    def current_foreground_package(self):
+        """Return the package owning the focused Android window, if available."""
+        outputs = []
+        for command in (
+            ["shell", "dumpsys", "window", "windows"],
+            ["shell", "dumpsys", "activity", "activities"],
+        ):
+            try:
+                outputs.append(str(self._run(command, timeout=8) or ""))
+            except AdbError:
+                continue
+
+        patterns = (
+            r"mCurrentFocus=.*?\s([A-Za-z0-9_.]+)/",
+            r"mFocusedApp=.*?\s([A-Za-z0-9_.]+)/",
+            r"topResumedActivity=.*?\s([A-Za-z0-9_.]+)/",
+            r"mResumedActivity=.*?\s([A-Za-z0-9_.]+)/",
+        )
+        for output in outputs:
+            for pattern in patterns:
+                match = re.search(pattern, output)
+                if match:
+                    return match.group(1)
+        return None
 
     def force_stop_package(self, package_name):
         package = str(package_name or "").strip()

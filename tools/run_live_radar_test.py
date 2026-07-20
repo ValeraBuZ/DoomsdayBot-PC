@@ -13,7 +13,7 @@ from buzzbot_app import AutoClicker
 from buzzbot.routines import effective_task_group
 
 
-def run(serial: str, timeout_seconds: float, task_id: str = "radar", settings=None) -> int:
+def run(serial: str, timeout_seconds: float, task_id: str = "radar_rewards", settings=None) -> int:
     bot = AutoClicker(root=None)
     settled = False
     try:
@@ -91,7 +91,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--serial", required=True)
     parser.add_argument("--timeout", type=float, default=600.0)
-    parser.add_argument("--task", default="radar")
+    parser.add_argument(
+        "--task",
+        choices=("radar_rewards", "radar_quick", "radar_marches"),
+        default="radar_rewards",
+    )
     parser.add_argument("--setting", action="append", default=[])
     args = parser.parse_args()
     settings = {}

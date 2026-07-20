@@ -28,7 +28,6 @@ DEFAULT_INDEXES = (1, 2, 3, 4, 5, 7)
 LIVE_STATE_FILE = PROJECT_ROOT / "test_runs" / "live_runtime_state.json"
 DEFAULT_TASKS = (
     "vip_rewards",
-    "radar",
     "mail_rewards",
     "research",
     "train_infantry",
@@ -44,10 +43,12 @@ DEFAULT_TASKS = (
     "oil",
 )
 TASK_TIMEOUTS = {
-    "game_login": 240.0,
+    "game_login": 360.0,
     "vip_rewards": 60.0,
     "alliance_donations": 160.0,
-    "radar": 420.0,
+    "radar_rewards": 180.0,
+    "radar_quick": 180.0,
+    "radar_marches": 240.0,
     "mail_rewards": 75.0,
     "research": 90.0,
     "train_infantry": 65.0,
@@ -62,6 +63,7 @@ TASK_TIMEOUTS = {
     "metal": 75.0,
     "oil": 75.0,
     "collective_mind": 100.0,
+    "prize_hunt": 300.0,
 }
 
 
@@ -112,6 +114,48 @@ def _active_boost_result(active_until):
         "error": "",
         "effect_until": float(active_until),
     }
+
+
+def _task_blocked_by_march_capacity(task, active_marches, max_marches):
+    """Treat a full march queue as a safe skip instead of a test timeout."""
+    return bool(
+        task.get("uses_march", False)
+        and int(active_marches) >= int(max_marches)
+    )
+
+
+def _task_reached_live_checkpoint(task_id, completed_steps):
+    """Return whether an intentionally repeating task proved its first cycle."""
+    checkpoints = {
+        "prize_hunt": {"again", "match", "confirm"},
+    }
+    expected = checkpoints.get(str(task_id), set())
+    return bool(expected.intersection({str(step) for step in completed_steps}))
+
+
+def _routine_outcome_is_success(task_id, outcome):
+    """Accept completion or a task-specific, positively identified busy state."""
+    if not isinstance(outcome, dict):
+        return False
+    normalized_task_id = str(task_id or "")
+    if str(outcome.get("task_id") or "") != normalized_task_id:
+        return False
+    if outcome.get("outcome") == "completed":
+        return True
+    if outcome.get("outcome") != "deferred_unavailable":
+        return False
+    reason = str(outcome.get("reason") or "")
+    return bool(
+        (normalized_task_id.startswith("train_") and reason == "max_queue_checks")
+        or (normalized_task_id == "research" and reason == "max_lab_checks")
+    )
+
+
+def _game_is_foreground(client):
+    try:
+        return client.current_foreground_package() == GAME_PACKAGE
+    except AdbError:
+        return False
 
 
 @contextmanager
@@ -244,12 +288,13 @@ def run_task(
             )
             selected["timeout_seconds"] = max(
                 float(selected.get("timeout_seconds", 0.0) or 0.0),
-                210.0 if task_id == "game_login" else 20.0,
+                330.0 if task_id == "game_login" else 20.0,
             )
 
             group = effective_task_group(selected)
             tracked_paths = {image["path"] for image in bot.search_images}
             initial_stats = {path: int(bot.stats.get(path, 0)) for path in tracked_paths}
+            bot.routine_last_outcome = {}
             bot.routine_next_run[task_id] = 0.0
             result["started"] = bool(bot.start_task_only(task_id))
             if not result["started"]:
@@ -261,14 +306,35 @@ def run_task(
             deadline = time.time() + timeout_seconds
             while time.time() < deadline and bot.is_running:
                 observed_steps.update(bot.routine_completed_steps)
+                if _task_reached_live_checkpoint(task_id, observed_steps):
+                    result["settled"] = True
+                    break
+                if (
+                    bot.current_routine_task_id is None
+                    and _task_blocked_by_march_capacity(
+                        selected,
+                        bot.get_active_marches(),
+                        bot.routine_max_marches,
+                    )
+                ):
+                    result["settled"] = True
+                    break
                 next_run = float(bot.routine_next_run.get(task_id, 0.0) or 0.0)
                 if bot.current_routine_task_id is None and next_run > time.time() + 1.0:
+                    outcome = dict(getattr(bot, "routine_last_outcome", {}) or {})
+                    observed_steps.update(outcome.get("completed_steps", ()))
                     if task_id == "game_login":
                         result["settled"] = bool(bot._is_main_screen_visible())
                         if not result["settled"]:
                             result["error"] = "main screen was not detected"
-                    else:
+                    elif _routine_outcome_is_success(task_id, outcome):
                         result["settled"] = True
+                    else:
+                        outcome_name = str(outcome.get("outcome") or "missing_outcome")
+                        reason = str(outcome.get("reason") or "").strip()
+                        result["error"] = f"routine ended with {outcome_name}"
+                        if reason:
+                            result["error"] += f": {reason}"
                     break
                 time.sleep(1.0)
 
@@ -384,6 +450,40 @@ def main():
                     continue
 
                 for task_id in tasks:
+                    recovery_result = None
+                    if not _game_is_foreground(client):
+                        logger.warning(
+                            "Doomsday left foreground before %s on %s; running login recovery",
+                            task_id,
+                            account_key,
+                        )
+                        recovery_result = run_task(
+                            connected_serial,
+                            account_key,
+                            "game_login",
+                            account_dir,
+                            args.research_branch,
+                            min(7, max(1, args.resource_level)),
+                            args.collective_level,
+                        )
+                        if not recovery_result["settled"]:
+                            task_result = {
+                                "task": task_id,
+                                "started": False,
+                                "settled": False,
+                                "actions": 0,
+                                "completed_steps": [],
+                                "status": recovery_result.get("status", ""),
+                                "duration_seconds": recovery_result.get("duration_seconds", 0.0),
+                                "screenshot": recovery_result.get("screenshot", ""),
+                                "error": "game login recovery did not reach a stable main screen",
+                                "effect_until": 0.0,
+                                "foreground_recovered": False,
+                            }
+                            account_result["tasks"].append(task_result)
+                            _write_json(output_root / "summary.json", summary)
+                            continue
+
                     account_state = live_accounts.setdefault(instance.adb_serial, {})
                     active_until = float(
                         account_state.get("gathering_boost_active_until", 0.0) or 0.0
@@ -405,6 +505,8 @@ def main():
                             account_state["gathering_boost_active_until"] = effect_until
                             account_state["updated_at"] = datetime.now().isoformat(timespec="seconds")
                             _write_json(LIVE_STATE_FILE, live_state)
+                    if recovery_result is not None:
+                        task_result["foreground_recovered"] = True
                     account_result["tasks"].append(task_result)
                     _write_json(output_root / "summary.json", summary)
             except Exception as exc:

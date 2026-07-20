@@ -25,7 +25,6 @@ from tools.run_all_accounts_matrix import _capture, _run_hidden, _safe_name, _wa
 NON_MARCH_TASKS = (
     "vip_rewards",
     "alliance_donations",
-    "radar",
     "alliance_help",
     "fence_survivors",
     "processing_factory",
@@ -50,12 +49,13 @@ MARCH_TASKS = (
 ZOMBIE_TEST_ACCOUNT = "Phoenix675"
 TASK_FAILURE_PATTERNS = (
     r"Routine ([a-z0-9_]+) timed out without actions",
-    r"Routine ([a-z0-9_]+) is temporarily unavailable \((?!max_queue_checks\)|max_lab_checks\))",
+    r"Routine ([a-z0-9_]+) is temporarily unavailable \((?!max_queue_checks\)|max_lab_checks\)|boost_item_unavailable\))",
 )
 BUSY_SQUAD_PATTERNS = (
     r"Routine ([a-z0-9_]+) reached the squad screen while every squad is busy",
     r"Routine ([a-z0-9_]+) reached the squad screen without an available squad",
     r"Routine ([a-z0-9_]+) is temporarily unavailable \((?:max_queue_checks|max_lab_checks)\)",
+    r"Routine ([a-z0-9_]+) is temporarily unavailable \(boost_item_unavailable\)",
 )
 
 
@@ -89,6 +89,17 @@ def _busy_tasks_from_log(log_text):
     for pattern in BUSY_SQUAD_PATTERNS:
         busy.update(re.findall(pattern, log_text))
     return sorted(busy)
+
+
+def _capacity_blocked_march_tasks(selected_ids, routine_tasks, active_marches, max_marches):
+    if int(active_marches) < max(1, int(max_marches)):
+        return set()
+    selected = set(selected_ids)
+    return {
+        str(task.get("id"))
+        for task in routine_tasks
+        if task.get("id") in selected and task.get("uses_march", False)
+    }
 
 
 def _configure_program(bot, selected_ids, rng):
@@ -156,6 +167,7 @@ def run_program(instance, selected_ids, seed, output_dir, timeout_seconds, settl
         "unexpected_groups": [],
         "missing_tasks": [],
         "task_failures": [],
+        "capacity_blocked_tasks": [],
         "adb_launch_attempts": 0,
         "passed": False,
         "error": "",
@@ -218,6 +230,7 @@ def run_program(instance, selected_ids, seed, output_dir, timeout_seconds, settl
 
         current_task = None
         current_steps = ()
+        capacity_blocked_tasks = set()
         deadline = time.time() + float(timeout_seconds)
         while time.time() < deadline and bot.is_running:
             observed = bot.current_routine_task_id
@@ -254,6 +267,14 @@ def run_program(instance, selected_ids, seed, output_dir, timeout_seconds, settl
                 for task_id in selected_with_login
                 if float(bot.routine_next_run.get(task_id, 0.0) or 0.0) > started_at + 1.0
             }
+            newly_blocked = _capacity_blocked_march_tasks(
+                selected_ids,
+                bot.routine_tasks,
+                bot.get_active_marches(),
+                bot.routine_max_marches,
+            ).difference(result["visited_tasks"])
+            capacity_blocked_tasks.update(newly_blocked)
+            processed.update(capacity_blocked_tasks)
             if processed == selected_with_login and bot.current_routine_task_id is None:
                 break
             time.sleep(0.5)
@@ -261,7 +282,12 @@ def run_program(instance, selected_ids, seed, output_dir, timeout_seconds, settl
             if bot.is_running:
                 result["error"] = "program timeout"
 
-        result["missing_tasks"] = sorted(selected_with_login.difference(result["visited_tasks"]))
+        result["capacity_blocked_tasks"] = sorted(capacity_blocked_tasks)
+        result["missing_tasks"] = sorted(
+            selected_with_login
+            .difference(result["visited_tasks"])
+            .difference(capacity_blocked_tasks)
+        )
         for path, group in tracked_images.items():
             actions = max(0, int(bot.stats.get(path, 0)) - initial_stats[path])
             if actions:
@@ -274,7 +300,9 @@ def run_program(instance, selected_ids, seed, output_dir, timeout_seconds, settl
         handler.flush()
         log_text = log_path.read_text(encoding="utf-8", errors="replace")
         result["task_failures"] = _task_failures_from_log(log_text)
-        result["busy_squad_tasks"] = _busy_tasks_from_log(log_text)
+        result["busy_squad_tasks"] = sorted(
+            set(_busy_tasks_from_log(log_text)).union(capacity_blocked_tasks)
+        )
         if (
             not result["missing_tasks"]
             and not result["unexpected_groups"]

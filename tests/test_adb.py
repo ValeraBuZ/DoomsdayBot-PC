@@ -116,6 +116,37 @@ class AdbClientTests(unittest.TestCase):
             ["adb.exe", "-s", "emulator-5556", "shell", "input", "keyevent", "67"],
         )
 
+    def test_current_foreground_package_reads_focused_window(self):
+        calls = []
+
+        def runner(command, **kwargs):
+            calls.append((command, kwargs))
+            if "window" in command:
+                return FakeResult(
+                    stdout=(
+                        "mCurrentFocus=Window{42 u0 "
+                        "com.igg.android.doomsdaylastsurvivors/.MainActivity}"
+                    )
+                )
+            return FakeResult()
+
+        package = self.make_client(runner).current_foreground_package()
+        self.assertEqual(package, "com.igg.android.doomsdaylastsurvivors")
+        self.assertEqual(calls[0][0][-3:], ["dumpsys", "window", "windows"])
+
+    def test_current_foreground_package_falls_back_to_resumed_activity(self):
+        def runner(command, **_kwargs):
+            if "window" in command:
+                return FakeResult(stdout="")
+            return FakeResult(
+                stdout="topResumedActivity=ActivityRecord{1 u0 com.android.launcher3/.Launcher}"
+            )
+
+        self.assertEqual(
+            self.make_client(runner).current_foreground_package(),
+            "com.android.launcher3",
+        )
+
     def test_launch_package_uses_selected_emulator(self):
         calls = []
 

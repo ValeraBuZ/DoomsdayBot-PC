@@ -45,6 +45,10 @@ from buzzbot.logging_utils import configure_logging, install_exception_logging
 from buzzbot.matching import (
     TemplateCache,
     detect_alliance_marked_project_target,
+    detect_blank_webview_close_target,
+    detect_collective_tutorial_continue_target,
+    detect_login_session_expired_ok_target,
+    detect_prize_hunt_squad_confirmation_target,
     detect_radar_card_action_target,
     detect_radar_notification_targets,
     detect_radar_world_action_target,
@@ -53,6 +57,7 @@ from buzzbot.matching import (
     zombie_camp_checkbox_is_checked,
 )
 from buzzbot.routines import (
+    LEGACY_RADAR_TEMPLATE_UIDS,
     PROFILE_NAMESPACE,
     completed_runtime_steps_for_image,
     default_routine_tasks,
@@ -61,6 +66,7 @@ from buzzbot.routines import (
     gathering_boost_active_until,
     gathering_boost_duration_hours,
     image_is_allowed_for_routine,
+    is_radar_task_id,
     is_task_effectively_enabled,
     next_due_task,
     next_run_after_finish,
@@ -77,6 +83,7 @@ from buzzbot.routines import (
     setting_requirement_matches,
     routine_home_recovery_due,
     routine_idle_screen_recovery_due,
+    routine_missing_followup_is_unavailable,
     routine_requires_settlement,
     routine_march_context_key,
     runtime_step_is_ready,
@@ -103,8 +110,9 @@ GAME_PACKAGE = "com.igg.android.doomsdaylastsurvivors"
 # is already visible. Keep the login task alive long enough to close it.
 GAME_LOGIN_MINIMUM_SECONDS = 50.0
 GAME_LOGIN_STABLE_SECONDS = 12.0
-GAME_LOGIN_RESTART_SECONDS = 75.0
+GAME_LOGIN_RESTART_SECONDS = 150.0
 GAME_LOGIN_MAX_RESTARTS = 2
+GAME_LOGIN_WEBVIEW_GRACE_SECONDS = 15.0
 WORLD_SEARCH_TASK_IDS = {"food", "wood", "metal", "oil", "zombie_hunt", "collective_mind"}
 MARCH_OBSERVER_GRACE_SECONDS = 15.0
 
@@ -237,6 +245,9 @@ LANGUAGES = {
         'routine_settings': "Настроить задачи",
         'routine_help': "Сначала лечение, затем заполнение свободных походов ресурсами по кругу.",
         'routine_name_game_login': "Вход в игру",
+        'routine_name_radar_rewards': "Радар: награды",
+        'routine_name_radar_quick': "Радар: быстрые",
+        'routine_name_radar_marches': "Радар: с отрядом",
         'routine_name_heal': "Лечение войск",
         'routine_name_prize_hunt': "Охота за призом",
         'routine_name_food': "Еда",
@@ -440,6 +451,9 @@ LANGUAGES = {
         'routine_settings': "Configure tasks",
         'routine_help': "Healing runs first, then free marches are filled with resources in rotation.",
         'routine_name_game_login': "Launch game",
+        'routine_name_radar_rewards': "Radar: rewards",
+        'routine_name_radar_quick': "Radar: quick tasks",
+        'routine_name_radar_marches': "Radar: squad tasks",
         'routine_name_heal': "Heal troops",
         'routine_name_prize_hunt': "Prize hunt",
         'routine_name_food': "Food",
@@ -625,6 +639,8 @@ class AutoClicker:
         self.routine_current_action_count = 0
         self.routine_action_counts = {}
         self.routine_completed_steps = set()
+        self.routine_last_outcome = {}
+        self.routine_action_completes_task = False
         self.routine_idle_confirmation_count = 0
         self.routine_home_recovery_attempted = False
         self.routine_login_restart_count = 0
@@ -635,6 +651,7 @@ class AutoClicker:
         self.routine_radar_pending_marker_key = None
         self.routine_radar_confirmed_marker_keys = set()
         self.routine_radar_in_progress_seen = False
+        self.routine_collective_tutorial_taps = 0
         self.routine_only_task_id = None
 
         # Profiles let one LDPlayer instance rotate through saved in-game accounts.
@@ -1316,6 +1333,17 @@ class AutoClicker:
 
     def _return_to_main_screen(self, max_back_steps=5, require_settlement=False):
         for step in range(max(1, int(max_back_steps)) + 1):
+            if self.uses_adb:
+                try:
+                    foreground_package = self.adb_client.current_foreground_package()
+                except Exception:
+                    foreground_package = None
+                if foreground_package and foreground_package != GAME_PACKAGE:
+                    logger.warning(
+                        "Stopped main-screen recovery after Doomsday left foreground: %s",
+                        foreground_package,
+                    )
+                    return False
             if self._is_main_screen_visible():
                 if require_settlement and not self._is_settlement_screen_visible():
                     return self._switch_to_settlement_screen()
@@ -1984,6 +2012,37 @@ class AutoClicker:
                         if "match_method" in img:
                             del img["match_method"]
 
+                    legacy_radar_images = [
+                        image
+                        for image in self.search_images
+                        if str(image.get("uid") or "") in LEGACY_RADAR_TEMPLATE_UIDS
+                    ]
+                    if legacy_radar_images:
+                        managed_root = IMG_DIR.resolve()
+                        for image in legacy_radar_images:
+                            try:
+                                legacy_path = Path(image.get("path", "")).resolve()
+                                if legacy_path.is_relative_to(managed_root) and legacy_path.exists():
+                                    legacy_path.unlink()
+                            except OSError:
+                                logger.warning(
+                                    "Не удалось удалить старый шаблон радара: %s",
+                                    image.get("path"),
+                                )
+                        self.search_images = [
+                            image
+                            for image in self.search_images
+                            if str(image.get("uid") or "") not in LEGACY_RADAR_TEMPLATE_UIDS
+                        ]
+                        self.groups.pop("Радарная станция", None)
+                        self.group_schedules.pop("Радарная станция", None)
+                        self.group_execution.pop("Радарная станция", None)
+                        self.routine_next_run.pop("radar", None)
+                        logger.info(
+                            "Удалено старых встроенных шаблонов радара: %s",
+                            len(legacy_radar_images),
+                        )
+
                     upgraded_resources = upgrade_resource_runtime_metadata(
                         self.search_images,
                         self.routine_tasks,
@@ -2586,6 +2645,29 @@ class AutoClicker:
             return None
 
         task = runtime_tasks[index]
+        if self.uses_adb and task.get("id") != "game_login":
+            login_index = next(
+                (
+                    task_index
+                    for task_index, candidate in enumerate(runtime_tasks)
+                    if candidate.get("id") == "game_login" and candidate.get("enabled")
+                ),
+                None,
+            )
+            if login_index is not None:
+                try:
+                    foreground_package = self.adb_client.current_foreground_package()
+                except Exception:
+                    logger.exception("Failed to verify the foreground Android package")
+                    foreground_package = None
+                if foreground_package and foreground_package != GAME_PACKAGE:
+                    logger.warning(
+                        "Doomsday is not in foreground (%s); forcing the enabled login task",
+                        foreground_package,
+                    )
+                    self.routine_next_run["game_login"] = 0.0
+                    index = login_index
+                    task = runtime_tasks[index]
         self.current_routine_index = index
         self.current_routine_task_id = task["id"]
         self.routine_task_started_at = now
@@ -2594,6 +2676,8 @@ class AutoClicker:
         self.routine_current_action_count = 0
         self.routine_action_counts = {}
         self.routine_completed_steps = set()
+        self.routine_last_outcome = {}
+        self.routine_action_completes_task = False
         self.routine_idle_confirmation_count = 0
         self.routine_home_recovery_attempted = False
         self.routine_login_restart_count = 0
@@ -2604,6 +2688,7 @@ class AutoClicker:
         self.routine_radar_pending_marker_key = None
         self.routine_radar_confirmed_marker_keys = set()
         self.routine_radar_in_progress_seen = False
+        self.routine_collective_tutorial_taps = 0
         template_count = len(self.get_routine_templates(task, active_only=True))
         self.set_status_message(
             self.tr(
@@ -2662,11 +2747,15 @@ class AutoClicker:
             return False
         self.routine_idle_guard_visible = True
         for image in self.search_images:
-            if not image.get("prevents_idle_completion") or not self._is_active(image):
+            if (
+                image.get("group") != effective_task_group(task)
+                or not image.get("prevents_idle_completion")
+                or not self._is_active(image)
+            ):
                 continue
             blocker_location, blocker_bbox, _blocker_confidence = self._locate_image(image)
             if blocker_location is not None:
-                if task.get("id") == "radar":
+                if is_radar_task_id(task.get("id")):
                     if frame is None:
                         frame, _frame_origin = self._capture_screen_bgr(force=True)
                     if not radar_marker_has_notification(frame, blocker_bbox):
@@ -2676,7 +2765,7 @@ class AutoClicker:
                         )
                         continue
                 if (
-                    task.get("id") == "radar"
+                    is_radar_task_id(task.get("id"))
                     and radar_marker_was_confirmed(
                         image.get("uid"),
                         blocker_location.x,
@@ -2735,10 +2824,15 @@ class AutoClicker:
             return
 
         completion_uid = task.get("completion_uid") or ""
+        march_completion_step = str(task.get("march_completion_runtime_step") or "")
         should_count_march = bool(
             task.get("uses_march")
             and self.routine_current_had_action
             and (completion_clicked or not completion_uid)
+            and (
+                not march_completion_step
+                or march_completion_step in self.routine_completed_steps
+            )
         )
         if should_count_march:
             self.routine_deployment_blocked_until = 0.0
@@ -2761,7 +2855,6 @@ class AutoClicker:
             "mail_rewards",
             "completed_tasks",
             "vip_rewards",
-            "radar",
             "research",
             "heal",
             "train_infantry",
@@ -2776,11 +2869,11 @@ class AutoClicker:
             )
 
         radar_has_in_progress = bool(
-            task.get("id") == "radar" and self.routine_radar_in_progress_seen
+            is_radar_task_id(task.get("id")) and self.routine_radar_in_progress_seen
         )
         if task.get("id") == "prize_hunt" and task.get("settings", {}).get("repeat_until_stopped", True):
             self.routine_next_run[task["id"]] = now
-        elif task.get("id") == "radar":
+        elif is_radar_task_id(task.get("id")):
             self.routine_next_run[task["id"]] = next_run_after_radar_pass(
                 task,
                 now,
@@ -2825,12 +2918,19 @@ class AutoClicker:
                     name=self.get_routine_task_name(task),
                     minutes=(
                         next_run_minutes
-                        if task.get("id") in {"radar", "gathering_boost"}
+                        if is_radar_task_id(task.get("id"))
+                        or task.get("id") == "gathering_boost"
                         else float(task.get("interval_minutes", 1.0))
                     ),
                 ),
                 force=True,
             )
+        self.routine_last_outcome = {
+            "task_id": str(task.get("id") or ""),
+            "outcome": "completed",
+            "completed_steps": sorted(self.routine_completed_steps),
+            "actions": int(self.routine_current_action_count),
+        }
         self.current_routine_index = (self.current_routine_index + 1) % len(self.routine_tasks)
         self.current_routine_task_id = None
         self.routine_current_had_action = False
@@ -3005,7 +3105,10 @@ class AutoClicker:
         return True
 
     def _try_radar_visual_fallback(self, task):
-        if task.get("id") != "radar":
+        if (
+            not is_radar_task_id(task.get("id"))
+            or not task.get("settings", {}).get("visual_fallback", False)
+        ):
             return False
         try:
             frame, _origin = self._capture_screen_bgr(force=True)
@@ -3021,7 +3124,12 @@ class AutoClicker:
         ):
             return True
 
-        radar_guard_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "radar:radar_screen_guard"))
+        radar_guard_uid = str(
+            uuid.uuid5(
+                PROFILE_NAMESPACE,
+                f"{task.get('id')}:radar_screen_guard",
+            )
+        )
         if self._template_uid_is_visible(radar_guard_uid):
             for marker_target in detect_radar_notification_targets(frame):
                 if self._tap_radar_fallback(
@@ -3042,6 +3150,214 @@ class AutoClicker:
                 return True
         return False
 
+    def _try_game_login_visual_fallback(self, task):
+        if task.get("id") != "game_login":
+            return False
+        try:
+            frame, _origin = self._capture_screen_bgr(force=True)
+        except Exception:
+            logger.exception("Game login fallback could not capture the screen")
+            return False
+
+        session_expired_target = detect_login_session_expired_ok_target(frame)
+        if session_expired_target is not None and self._tap_routine_fallback(
+            session_expired_target,
+            ("login_session_expired", *session_expired_target),
+            "Вход в игру: подтверждаю истёкшую сессию",
+        ):
+            logger.info("Game login fallback dismissed the expired session dialog")
+            return True
+
+        login_templates = (
+            (
+                "93b0417c-c8ce-5636-8f2d-8716f6c52bad",
+                0.82,
+                "Вход в игру: продолжаю последний вход IGG",
+            ),
+            (
+                "6d4f72d8-c3fa-55c2-b175-f866fd14edf0",
+                None,
+                "Вход в игру: выбираю сохранённый вход Google",
+            ),
+            (
+                "9d212722-ffc1-570c-8086-25a7f59e7fd4",
+                None,
+                "Вход в игру: выбираю сохранённый аккаунт Google",
+            ),
+        )
+        images_by_uid = {
+            str(image.get("uid") or ""): image
+            for image in self.search_images
+        }
+        for uid, confidence_override, status_message in login_templates:
+            image = images_by_uid.get(uid)
+            if image is None:
+                continue
+            try:
+                match_image = image
+                if confidence_override is not None:
+                    match_image = dict(image)
+                    match_image["confidence"] = min(
+                        float(image.get("confidence", confidence_override)),
+                        confidence_override,
+                    )
+                location, bbox, _score = self._locate_image(match_image)
+                if location is None or bbox is None:
+                    continue
+                is_valid, _reason = self._validate_detected_match(match_image, bbox)
+                if not is_valid:
+                    continue
+                if image.get("action") == "google_account_select":
+                    self._execute_action(image, location)
+                    self.routine_last_action_time = time.time()
+                    self.routine_idle_confirmation_count = 0
+                    self.click_count += 1
+                    logger.info("Game login fallback selected the first Google account")
+                    return True
+                if self._tap_routine_fallback(
+                    (location.x, location.y),
+                    ("game_login", uid),
+                    status_message,
+                ):
+                    logger.info("Game login fallback selected saved sign-in: %s", uid)
+                    return True
+            except Exception:
+                logger.exception("Game login fallback template failed: %s", uid)
+
+        target = detect_blank_webview_close_target(frame)
+        if target is None:
+            return False
+        if time.time() - self.routine_last_action_time < GAME_LOGIN_WEBVIEW_GRACE_SECONDS:
+            return False
+        target_x, target_y = map(int, target)
+        coord_key = ("login_blank_webview", target_x, target_y)
+        if coord_key in self.blocked_coords:
+            return False
+        try:
+            if self.uses_adb:
+                self.adb_client.tap(target_x, target_y)
+            else:
+                pyautogui.click(target_x, target_y)
+        except Exception:
+            logger.exception("Game login fallback could not close the blank webview")
+            return False
+
+        self._invalidate_capture()
+        self.blocked_coords[coord_key] = time.time() + 5.0
+        self.routine_last_action_time = time.time()
+        self.routine_idle_confirmation_count = 0
+        self.click_count += 1
+        self.set_status_message("Вход в игру: закрываю пустое окно авторизации", force=True)
+        logger.info("Game login fallback closed blank webview at (%s, %s)", target_x, target_y)
+        self._interruptible_sleep(2.0)
+        return True
+
+    def _tap_routine_fallback(self, target, coord_key, status_message):
+        target_x, target_y = map(int, target)
+        if coord_key in self.blocked_coords:
+            return False
+        try:
+            if self.uses_adb:
+                self.adb_client.tap(target_x, target_y)
+            else:
+                pyautogui.click(target_x, target_y)
+        except Exception:
+            logger.exception("Routine fallback click failed: %s", coord_key)
+            return False
+
+        self._invalidate_capture()
+        self.blocked_coords[coord_key] = time.time() + 1.0
+        self.routine_current_had_action = True
+        self.routine_last_action_time = time.time()
+        self.routine_idle_confirmation_count = 0
+        self.click_count += 1
+        self.set_status_message(status_message, force=True)
+        self._interruptible_sleep(1.2)
+        return True
+
+    def _try_mail_visual_fallback(self, task):
+        if (
+            task.get("id") != "mail_rewards"
+            or "open_mail" in self.routine_completed_steps
+            or not self._is_main_screen_visible()
+        ):
+            return False
+        try:
+            frame, _origin = self._capture_screen_bgr(force=True)
+        except Exception:
+            logger.exception("Mail fallback could not capture the main screen")
+            return False
+
+        height, width = frame.shape[:2]
+        target = (
+            int(round(width * 1241 / 1280.0)),
+            int(round(height * 592 / 720.0)),
+        )
+        if not self._tap_routine_fallback(
+            target,
+            ("mail_open_fallback", *target),
+            "\u041f\u043e\u0447\u0442\u0430: \u043e\u0442\u043a\u0440\u044b\u0432\u0430\u044e \u043a\u043d\u043e\u043f\u043a\u0443 \u0441 \u0433\u043b\u0430\u0432\u043d\u043e\u0433\u043e \u044d\u043a\u0440\u0430\u043d\u0430",
+        ):
+            return False
+        self.routine_completed_steps.add("open_mail")
+        logger.info("Mail fallback opened the inbox at (%s, %s)", *target)
+        return True
+
+    def _try_collective_tutorial_fallback(self, task):
+        if (
+            task.get("id") != "collective_mind"
+            or "search" not in self.routine_completed_steps
+            or self.routine_collective_tutorial_taps >= 4
+        ):
+            return False
+        try:
+            frame, _origin = self._capture_screen_bgr(force=True)
+        except Exception:
+            logger.exception("Collective tutorial fallback could not capture the screen")
+            return False
+
+        target = detect_collective_tutorial_continue_target(frame)
+        if target is None:
+            return False
+        if not self._tap_routine_fallback(
+            target,
+            ("collective_tutorial", self.routine_collective_tutorial_taps),
+            "\u041a\u043e\u043b\u043b\u0435\u043a\u0442\u0438\u0432\u043d\u044b\u0439 \u0440\u0430\u0437\u0443\u043c: \u043f\u0440\u043e\u043f\u0443\u0441\u043a\u0430\u044e \u0438\u0433\u0440\u043e\u0432\u043e\u0435 \u043e\u0431\u0443\u0447\u0435\u043d\u0438\u0435",
+        ):
+            return False
+        self.routine_collective_tutorial_taps += 1
+        logger.info(
+            "Collective tutorial fallback advanced page %s at (%s, %s)",
+            self.routine_collective_tutorial_taps,
+            *target,
+        )
+        return True
+
+    def _try_prize_hunt_confirmation_fallback(self, task):
+        if task.get("id") != "prize_hunt" or "enter" not in self.routine_completed_steps:
+            return False
+        try:
+            frame, _origin = self._capture_screen_bgr(force=True)
+        except Exception:
+            logger.exception("Prize hunt confirmation fallback could not capture the screen")
+            return False
+
+        target = detect_prize_hunt_squad_confirmation_target(frame)
+        if target is None:
+            return False
+        if not self._tap_routine_fallback(
+            target,
+            ("prize_hunt_squad_confirmation", *target),
+            "Охота за призом: подтверждаю подбор сохранённого отряда",
+        ):
+            return False
+        self.routine_completed_steps.add("squad_confirmation")
+        # This dialog is the final confirmation when a deployed squad differs
+        # from its preset. Accepting it enters the hunt directly.
+        self.routine_completed_steps.add("deploy")
+        logger.info("Prize hunt squad confirmation accepted at (%s, %s)", *target)
+        return True
+
     def _defer_current_routine_no_action(self, now=None):
         now = time.time() if now is None else float(now)
         task = self.get_routine_task(self.current_routine_task_id)
@@ -3058,10 +3374,11 @@ class AutoClicker:
         )
         # Keep standalone checkboxes independent: a partial or unavailable task
         # must not leave the next task trapped on its sub-screen.
-        self._return_to_main_screen(
-            max_back_steps=5,
-            require_settlement=routine_requires_settlement(task),
-        )
+        if not task.get("manual_screen_required", False):
+            self._return_to_main_screen(
+                max_back_steps=5,
+                require_settlement=routine_requires_settlement(task),
+            )
         self.set_status_message(
             self.tr(
                 'routine_no_action',
@@ -3070,6 +3387,12 @@ class AutoClicker:
             ),
             force=True,
         )
+        self.routine_last_outcome = {
+            "task_id": str(task.get("id") or ""),
+            "outcome": "deferred_no_action",
+            "completed_steps": sorted(self.routine_completed_steps),
+            "actions": int(self.routine_current_action_count),
+        }
         self.current_routine_index = (self.current_routine_index + 1) % len(self.routine_tasks)
         self.current_routine_task_id = None
         self.routine_current_had_action = False
@@ -3102,6 +3425,12 @@ class AutoClicker:
             "Все отряды заняты походами или лагерем. Повтор через 60 сек",
             force=True,
         )
+        self.routine_last_outcome = {
+            "task_id": str(task.get("id") or ""),
+            "outcome": "deferred_no_squad",
+            "completed_steps": sorted(self.routine_completed_steps),
+            "actions": int(self.routine_current_action_count),
+        }
         self.current_routine_index = (self.current_routine_index + 1) % len(self.routine_tasks)
         self.current_routine_task_id = None
         self.routine_current_had_action = False
@@ -3121,6 +3450,12 @@ class AutoClicker:
             self.current_routine_task_id = None
             return
 
+        reason = str(reason)
+        display_reason = {
+            "boost_item_unavailable": "нет подходящего усиления сбора на выбранное время",
+            "max_queue_checks": "все очереди производства заняты",
+            "max_lab_checks": "все очереди исследований заняты",
+        }.get(reason, reason)
         retry_delay = max(60.0, no_action_retry_delay(task))
         self.routine_next_run[task["id"]] = now + retry_delay
         logger.info(
@@ -3129,14 +3464,22 @@ class AutoClicker:
             reason,
             retry_delay,
         )
-        self._return_to_main_screen(
-            max_back_steps=5,
-            require_settlement=routine_requires_settlement(task),
-        )
+        if not task.get("manual_screen_required", False):
+            self._return_to_main_screen(
+                max_back_steps=5,
+                require_settlement=routine_requires_settlement(task),
+            )
         self.set_status_message(
-            f"{self.get_routine_task_name(task)}: сейчас недоступно. Повтор через {int(retry_delay)} сек",
+            f"{self.get_routine_task_name(task)}: {display_reason}. Повтор через {int(retry_delay)} сек",
             force=True,
         )
+        self.routine_last_outcome = {
+            "task_id": str(task.get("id") or ""),
+            "outcome": "deferred_unavailable",
+            "reason": str(reason),
+            "completed_steps": sorted(self.routine_completed_steps),
+            "actions": int(self.routine_current_action_count),
+        }
         self.current_routine_index = (self.current_routine_index + 1) % len(self.routine_tasks)
         self.current_routine_task_id = None
         self.routine_current_had_action = False
@@ -3648,7 +3991,7 @@ class AutoClicker:
 
                             if location and bbox:
                                 if (
-                                    current_routine_task.get("id") == "radar"
+                                    is_radar_task_id(current_routine_task.get("id"))
                                     and img_config.get("runtime_step") == "radar_marker"
                                 ):
                                     radar_frame, _radar_origin = self._capture_screen_bgr()
@@ -3678,7 +4021,7 @@ class AutoClicker:
                                     continue
 
                                 if (
-                                    current_routine_task.get("id") == "radar"
+                                    is_radar_task_id(current_routine_task.get("id"))
                                     and img_config.get("prevents_idle_completion")
                                     and radar_marker_was_confirmed(
                                         img_config.get("uid") or img_config.get("path"),
@@ -3714,12 +4057,19 @@ class AutoClicker:
                                 self.click_count += 1
                                 action_occurred = True
                                 is_system_template = img_config.get("group") == SYSTEM_TEMPLATE_GROUP
-                                if self.routine_mode and not is_system_template:
+                                defer_reason = str(img_config.get("defer_routine_reason") or "")
+                                if self.routine_mode and not is_system_template and defer_reason:
+                                    self._defer_current_routine_unavailable(
+                                        defer_reason,
+                                        time.time(),
+                                    )
+                                    refresh_after_action = True
+                                elif self.routine_mode and not is_system_template:
                                     self.routine_current_had_action = True
                                     self.routine_last_action_time = time.time()
                                     self.routine_idle_confirmation_count = 0
                                     if (
-                                        current_routine_task.get("id") == "radar"
+                                        is_radar_task_id(current_routine_task.get("id"))
                                         and img_config.get("prevents_idle_completion")
                                     ):
                                         self.routine_radar_pending_marker_key = (
@@ -3730,7 +4080,7 @@ class AutoClicker:
                                     runtime_step = str(img_config.get("runtime_step") or "")
                                     if runtime_step:
                                         if (
-                                            current_routine_task.get("id") == "radar"
+                                            is_radar_task_id(current_routine_task.get("id"))
                                             and runtime_step == "radar_marker"
                                         ):
                                             reset_radar_card_runtime_steps(
@@ -3745,7 +4095,7 @@ class AutoClicker:
                                             sorted(self.routine_completed_steps),
                                         )
                                     if (
-                                        current_routine_task.get("id") == "radar"
+                                        is_radar_task_id(current_routine_task.get("id"))
                                         and img_config.get("confirms_radar_marker")
                                     ):
                                         self._confirm_pending_radar_marker()
@@ -3767,6 +4117,16 @@ class AutoClicker:
                                         self.current_routine_task_id is not None
                                         and img_config.get("completes_routine", False)
                                     ):
+                                        self._finish_current_routine(
+                                            self.routine_last_action_time,
+                                            completion_clicked=True,
+                                        )
+                                        refresh_after_action = True
+                                    if (
+                                        self.current_routine_task_id is not None
+                                        and self.routine_action_completes_task
+                                    ):
+                                        self.routine_action_completes_task = False
                                         self._finish_current_routine(
                                             self.routine_last_action_time,
                                             completion_clicked=True,
@@ -3839,7 +4199,39 @@ class AutoClicker:
 
                 if (
                     self.routine_mode
-                    and current_routine_task.get("id") == "radar"
+                    and current_routine_task.get("id") == "game_login"
+                    and not action_occurred
+                    and self._try_game_login_visual_fallback(current_routine_task)
+                ):
+                    continue
+
+                if (
+                    self.routine_mode
+                    and current_routine_task.get("id") == "mail_rewards"
+                    and not action_occurred
+                    and self._try_mail_visual_fallback(current_routine_task)
+                ):
+                    continue
+
+                if (
+                    self.routine_mode
+                    and current_routine_task.get("id") == "collective_mind"
+                    and not action_occurred
+                    and self._try_collective_tutorial_fallback(current_routine_task)
+                ):
+                    continue
+
+                if (
+                    self.routine_mode
+                    and current_routine_task.get("id") == "prize_hunt"
+                    and not action_occurred
+                    and self._try_prize_hunt_confirmation_fallback(current_routine_task)
+                ):
+                    continue
+
+                if (
+                    self.routine_mode
+                    and is_radar_task_id(current_routine_task.get("id"))
                     and not action_occurred
                     and self._try_radar_visual_fallback(current_routine_task)
                 ):
@@ -3880,7 +4272,32 @@ class AutoClicker:
                     ):
                         self._defer_current_routine_no_squad(time.time())
                         continue
+                    if not action_occurred and routine_missing_followup_is_unavailable(
+                        current_routine_task,
+                        self.routine_completed_steps,
+                        idle,
+                    ):
+                        unavailable_reason = (
+                            "boost_item_unavailable"
+                            if current_routine_task.get("id") == "gathering_boost"
+                            else "событие конкурса сейчас не проводится"
+                        )
+                        self._defer_current_routine_unavailable(
+                            unavailable_reason,
+                            time.time(),
+                        )
+                        continue
                     if not action_occurred and idle >= timeout:
+                        if current_routine_task.get("manual_screen_required", False):
+                            guard_uid = str(
+                                current_routine_task.get("idle_completion_guard_uid") or ""
+                            )
+                            if guard_uid and not self._template_uid_is_visible(guard_uid):
+                                self._defer_current_routine_unavailable(
+                                    "сначала откройте радарную станцию",
+                                    time.time(),
+                                )
+                                continue
                         if current_routine_task.get("id") == "game_login":
                             self.routine_home_recovery_attempted = True
                             self.set_status_message(
@@ -4167,8 +4584,107 @@ class AutoClicker:
             else:
                 pyautogui.click(target_x, target_y)
             self._invalidate_capture()
+            self._interruptible_sleep(0.8)
+            queue_number = self.routine_action_counts.get("max_queue_checks", 0) + 1
+            queue_ordinal = int(img_config.get("training_queue_ordinal", 0) or 0)
+            radial_target = img_config.get("training_radial_target", ())
+            if queue_ordinal and queue_number == queue_ordinal and len(radial_target) == 2:
+                selected_frame, _selected_origin = self._capture_screen_bgr(force=True)
+                radial_x = int(round(float(radial_target[0]) * display.scale_x))
+                radial_y = int(round(float(radial_target[1]) * display.scale_y))
+                if self.uses_adb:
+                    self.adb_client.tap(radial_x, radial_y)
+                else:
+                    pyautogui.click(radial_x, radial_y)
+                self.routine_completed_steps.add("building")
+                self._invalidate_capture()
+                self.set_status_message(
+                    f"Выбрано учебное здание {queue_ordinal}/4",
+                    force=True,
+                )
+                self._interruptible_sleep(1.5)
+                training_frame, _training_origin = self._capture_screen_bgr(force=True)
+                if training_frame.shape != selected_frame.shape:
+                    selected_frame = cv2.resize(
+                        selected_frame,
+                        (training_frame.shape[1], training_frame.shape[0]),
+                        interpolation=cv2.INTER_LINEAR,
+                    )
+                screen_change = float(cv2.absdiff(selected_frame, training_frame).mean())
+                if screen_change < 3.0:
+                    logger.info(
+                        "Training radial tap did not change the screen (%.2f); retrying",
+                        screen_change,
+                    )
+                    if self.uses_adb:
+                        self.adb_client.tap(radial_x, radial_y)
+                    else:
+                        pyautogui.click(radial_x, radial_y)
+                    self._interruptible_sleep(1.5)
+                    training_frame, _training_origin = self._capture_screen_bgr(force=True)
+                    screen_change = float(cv2.absdiff(selected_frame, training_frame).mean())
+                if screen_change >= 3.0:
+                    logger.info(
+                        "Training screen opened for queue %s/4, screen change %.2f",
+                        queue_ordinal,
+                        screen_change,
+                    )
+                    synthetic = dict(img_config)
+                    synthetic.update(
+                        {
+                            "action": "train_highest",
+                            "click_offset": (423, 564),
+                            "delay": 1.5,
+                        }
+                    )
+                    synthetic_location = pyautogui.Point(
+                        int(round(640 * display.scale_x)),
+                        int(round(62 * display.scale_y)),
+                    )
+                    self._execute_action(synthetic, synthetic_location)
+                    self.routine_completed_steps.add("train")
+                    self.routine_action_completes_task = True
             img_config["last_used"] = time.time()
             self.set_status_message("Выбрано следующее учебное здание", force=True)
+            self._interruptible_sleep(img_config.get("delay", self.sleep_found))
+            return
+
+        if action == "select_research_queue":
+            if self.uses_adb:
+                self.adb_client.tap(int(round(target_x)), int(round(target_y)))
+            else:
+                pyautogui.click(target_x, target_y)
+            self._invalidate_capture()
+            self._interruptible_sleep(1.5)
+            selected_frame, _selected_origin = self._capture_screen_bgr(force=True)
+            research_x = int(round(755 * display.scale_x))
+            research_y = int(round(475 * display.scale_y))
+            if self.uses_adb:
+                self.adb_client.tap(research_x, research_y)
+            else:
+                pyautogui.click(research_x, research_y)
+            self._invalidate_capture()
+            self._interruptible_sleep(1.2)
+            research_frame, _research_origin = self._capture_screen_bgr(force=True)
+            if research_frame.shape != selected_frame.shape:
+                selected_frame = cv2.resize(
+                    selected_frame,
+                    (research_frame.shape[1], research_frame.shape[0]),
+                    interpolation=cv2.INTER_LINEAR,
+                )
+            screen_change = float(cv2.absdiff(selected_frame, research_frame).mean())
+            if screen_change < 3.0:
+                logger.info(
+                    "Research radial tap did not change the screen (%.2f); retrying",
+                    screen_change,
+                )
+                if self.uses_adb:
+                    self.adb_client.tap(research_x, research_y)
+                else:
+                    pyautogui.click(research_x, research_y)
+                self._interruptible_sleep(1.2)
+            img_config["last_used"] = time.time()
+            self.set_status_message("Открываю личные исследования", force=True)
             self._interruptible_sleep(img_config.get("delay", self.sleep_found))
             return
 
@@ -4534,43 +5050,116 @@ class AutoClicker:
             frame, _origin = self._capture_screen_bgr(force=True)
             if frame.shape[1] != 1280 or frame.shape[0] != 720:
                 frame = cv2.resize(frame, (1280, 720), interpolation=cv2.INTER_LINEAR)
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-            circles = cv2.HoughCircles(
-                gray,
-                cv2.HOUGH_GRADIENT,
-                dp=1.2,
-                minDist=70,
-                param1=100,
-                param2=40,
-                minRadius=32,
-                maxRadius=55,
-            )
-            candidates = []
-            if circles is not None:
+            def find_research_candidates(candidate_frame):
+                gray = cv2.cvtColor(candidate_frame, cv2.COLOR_BGR2GRAY)
+                hsv = cv2.cvtColor(candidate_frame, cv2.COLOR_BGR2HSV)
+                circles = cv2.HoughCircles(
+                    gray,
+                    cv2.HOUGH_GRADIENT,
+                    dp=1.2,
+                    minDist=70,
+                    param1=100,
+                    param2=40,
+                    minRadius=32,
+                    maxRadius=55,
+                )
+                points = []
+                if circles is None:
+                    return points
                 for x_value, y_value, radius in np.round(circles[0]).astype(int):
                     if not (115 <= x_value <= 1168 and 90 <= y_value <= 650):
                         continue
-                    yy, xx = np.ogrid[:frame.shape[0], :frame.shape[1]]
-                    mask = (xx - x_value) ** 2 + (yy - y_value) ** 2 <= int(radius * 0.75) ** 2
-                    saturation = float(hsv[:, :, 1][mask].mean()) if np.any(mask) else 0.0
-                    if saturation >= 25.0:
-                        candidates.append((x_value, y_value))
+                    yy, xx = np.ogrid[:candidate_frame.shape[0], :candidate_frame.shape[1]]
+                    mask = (
+                        (xx - x_value) ** 2 + (yy - y_value) ** 2
+                        <= int(radius * 0.75) ** 2
+                    )
+                    saturation = (
+                        float(hsv[:, :, 1][mask].mean()) if np.any(mask) else 0.0
+                    )
+                    if saturation >= 55.0:
+                        points.append((int(x_value), int(y_value)))
+                return points
+
+            def select_research_frontier(points):
+                centered = [point for point in points if 350 <= point[0] <= 1000] or points
+                frontier_x = max(point[0] for point in centered)
+                frontier_points = [point for point in centered if point[0] >= frontier_x - 35]
+                selected = min(frontier_points, key=lambda point: abs(point[1] - 360))
+                return selected, frontier_points
+
+            candidates = find_research_candidates(frame)
             if candidates:
                 # The rightmost colored nodes are the current unlocked frontier.
-                centered_candidates = [
-                    point for point in candidates
-                    if 350 <= point[0] <= 1000
-                ] or candidates
-                frontier_x = max(point[0] for point in centered_candidates)
-                frontier = [point for point in centered_candidates if point[0] >= frontier_x - 35]
-                research_x, research_y = min(frontier, key=lambda point: abs(point[1] - 360))
+                (research_x, research_y), frontier = select_research_frontier(candidates)
+                logger.info(
+                    "Research candidates=%s, frontier=%s, selected=(%s, %s)",
+                    candidates,
+                    frontier,
+                    research_x,
+                    research_y,
+                )
                 research_x = int(round(research_x * display.scale_x))
                 research_y = int(round(research_y * display.scale_y))
                 if self.uses_adb:
                     self.adb_client.tap(research_x, research_y)
                 else:
                     pyautogui.click(research_x, research_y)
+                self._invalidate_capture()
+                self._interruptible_sleep(0.8)
+                changed_frame, _changed_origin = self._capture_screen_bgr(force=True)
+                if changed_frame.shape[1] != 1280 or changed_frame.shape[0] != 720:
+                    changed_frame = cv2.resize(
+                        changed_frame,
+                        (1280, 720),
+                        interpolation=cv2.INTER_LINEAR,
+                    )
+                change_score = float(
+                    cv2.absdiff(frame, changed_frame).mean()
+                )
+                if change_score < 3.0:
+                    logger.info(
+                        "Research node tap did not change the screen (%.2f); retrying at (%s, %s)",
+                        change_score,
+                        research_x,
+                        research_y,
+                    )
+                    if self.uses_adb:
+                        self.adb_client.tap(research_x, research_y)
+                    else:
+                        pyautogui.click(research_x, research_y)
+                    self._interruptible_sleep(0.8)
+                else:
+                    logger.info(
+                        "Research node opened at (%s, %s), screen change %.2f",
+                        research_x,
+                        research_y,
+                        change_score,
+                    )
+                    followup_candidates = find_research_candidates(changed_frame)
+                    centered_followup = [
+                        point
+                        for point in followup_candidates
+                        if 350 <= point[0] <= 1000
+                    ]
+                    if len(centered_followup) >= 2:
+                        (followup_x, followup_y), followup_frontier = (
+                            select_research_frontier(followup_candidates)
+                        )
+                        logger.info(
+                            "Research tree recentered; candidates=%s, frontier=%s, selecting=(%s, %s)",
+                            followup_candidates,
+                            followup_frontier,
+                            followup_x,
+                            followup_y,
+                        )
+                        followup_x = int(round(followup_x * display.scale_x))
+                        followup_y = int(round(followup_y * display.scale_y))
+                        if self.uses_adb:
+                            self.adb_client.tap(followup_x, followup_y)
+                        else:
+                            pyautogui.click(followup_x, followup_y)
+                        self._interruptible_sleep(0.8)
                 self.set_status_message(
                     f"Выбрано исследование: {'война' if branch == 'war' else 'экономика'}",
                     force=True,

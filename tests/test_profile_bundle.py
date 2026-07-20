@@ -39,7 +39,7 @@ class ProfileBundleTests(unittest.TestCase):
             str(uuid.uuid5(namespace, "system:google_play_cancel")),
             str(uuid.uuid5(namespace, "system:last_igg_login")),
             str(uuid.uuid5(namespace, "system:loading_error_reload")),
-            str(uuid.uuid5(namespace, "radar:close_region_search")),
+            str(uuid.uuid5(namespace, "radar_marches:close_region_search")),
         }
 
         with zipfile.ZipFile(profile_path) as archive:
@@ -104,9 +104,16 @@ class ProfileBundleTests(unittest.TestCase):
         )
         select_alliance_uid = str(uuid.uuid5(namespace, "mail_rewards:select_alliance"))
         select_reports_uid = str(uuid.uuid5(namespace, "mail_rewards:select_reports"))
+        claim_main_uid = str(uuid.uuid5(namespace, "completed_tasks:claim_main"))
         hospital_uid = str(uuid.uuid5(namespace, "heal:open_wounded"))
         zombie_attack_uid = str(uuid.uuid5(namespace, "zombie_hunt:attack"))
-        radar_attack_uid = str(uuid.uuid5(namespace, "radar:attack_zombie"))
+        radar_attack_uid = str(uuid.uuid5(namespace, "radar_marches:attack_zombie"))
+        vehicle_queue_uid = str(uuid.uuid5(namespace, "train_vehicles:queue"))
+        research_queue_uid = str(uuid.uuid5(namespace, "research:queue"))
+        research_lab_uid = str(uuid.uuid5(namespace, "research:lab"))
+        prize_unavailable_uid = str(
+            uuid.uuid5(namespace, "prize_hunt:no_deployable_squad")
+        )
         self.assertLessEqual(images[project_uid]["confidence"], 0.74)
         self.assertEqual(
             images[marked_project_uid]["action"],
@@ -120,11 +127,39 @@ class ProfileBundleTests(unittest.TestCase):
             images[select_reports_uid]["requires_runtime_steps"],
             ["select_alliance"],
         )
+        self.assertEqual(
+            images[claim_main_uid]["disabled_after_runtime_steps"],
+            ["select_daily"],
+        )
         self.assertTrue(images[hospital_uid]["grayscale"])
         self.assertLessEqual(images[hospital_uid]["confidence"], 0.74)
         self.assertEqual(images[zombie_attack_uid]["action"], "zombie_attack")
         self.assertEqual(images[radar_attack_uid]["action"], "zombie_attack")
+        self.assertLessEqual(images[vehicle_queue_uid]["confidence"], 0.80)
+        self.assertEqual(images[vehicle_queue_uid]["action"], "select_training_queue")
+        self.assertEqual(images[vehicle_queue_uid]["training_queue_ordinal"], 4)
+        self.assertGreaterEqual(tasks["train_vehicles"]["settings"]["max_queue_checks"], 5)
+        self.assertEqual(images[research_queue_uid]["action"], "select_research_queue")
+        self.assertLessEqual(images[research_lab_uid]["confidence"], 0.84)
+        self.assertGreaterEqual(tasks["research"]["settings"]["max_lab_checks"], 2)
+        self.assertEqual(
+            images[prize_unavailable_uid]["defer_routine_reason"],
+            "нет развертываемого отряда",
+        )
+        self.assertEqual(images[prize_unavailable_uid]["routine_priority"], 1)
 
+        radar_tasks = {
+            task_id: tasks[task_id]
+            for task_id in ("radar_rewards", "radar_quick", "radar_marches")
+        }
+        self.assertNotIn("radar", tasks)
+        self.assertTrue(all(task["manual_screen_required"] for task in radar_tasks.values()))
+        self.assertFalse(radar_tasks["radar_rewards"]["uses_march"])
+        self.assertFalse(radar_tasks["radar_quick"]["uses_march"])
+        self.assertTrue(radar_tasks["radar_marches"]["uses_march"])
+        for task_id in radar_tasks:
+            open_uid = str(uuid.uuid5(namespace, f"{task_id}:open_radar"))
+            self.assertNotIn(open_uid, images)
 
 if __name__ == "__main__":
     unittest.main()

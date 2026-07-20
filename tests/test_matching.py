@@ -8,6 +8,10 @@ import numpy as np
 from buzzbot.matching import (
     TemplateCache,
     detect_alliance_marked_project_target,
+    detect_blank_webview_close_target,
+    detect_collective_tutorial_continue_target,
+    detect_login_session_expired_ok_target,
+    detect_prize_hunt_squad_confirmation_target,
     detect_radar_card_action_target,
     detect_radar_notification_targets,
     detect_radar_world_action_target,
@@ -40,6 +44,86 @@ class UnicodeImageReadTests(unittest.TestCase):
 
 
 class DynamicGameControlTests(unittest.TestCase):
+    def test_detects_expired_login_ok_button_only(self):
+        frame = np.full((720, 1280, 3), (55, 70, 90), dtype=np.uint8)
+        cv2.rectangle(frame, (320, 165), (960, 575), (120, 135, 150), thickness=-1)
+        cv2.rectangle(frame, (507, 484), (773, 530), (35, 185, 245), thickness=-1)
+
+        self.assertEqual(detect_login_session_expired_ok_target(frame), (640, 508))
+
+        no_dialog = np.full((720, 1280, 3), (55, 70, 90), dtype=np.uint8)
+        cv2.circle(no_dialog, (550, 550), 45, (35, 185, 245), thickness=-1)
+        self.assertIsNone(detect_login_session_expired_ok_target(no_dialog))
+
+    def test_detects_blank_login_webview_close_button_only(self):
+        blank_webview = np.full((720, 1280, 3), 255, dtype=np.uint8)
+        cv2.line(blank_webview, (1234, 22), (1258, 46), (115, 115, 115), 3)
+        cv2.line(blank_webview, (1258, 22), (1234, 46), (115, 115, 115), 3)
+
+        self.assertEqual(
+            detect_blank_webview_close_target(blank_webview),
+            (1246, 34),
+        )
+        self.assertIsNone(
+            detect_blank_webview_close_target(np.full((720, 1280, 3), 255, dtype=np.uint8))
+        )
+        self.assertIsNone(
+            detect_blank_webview_close_target(np.full((720, 1280, 3), 60, dtype=np.uint8))
+        )
+
+    def test_blank_login_webview_target_scales_to_device(self):
+        blank_webview = np.full((360, 640, 3), 255, dtype=np.uint8)
+        cv2.line(blank_webview, (617, 11), (629, 23), (115, 115, 115), 2)
+        cv2.line(blank_webview, (629, 11), (617, 23), (115, 115, 115), 2)
+        self.assertEqual(
+            detect_blank_webview_close_target(blank_webview),
+            (623, 17),
+        )
+
+    def test_detects_collective_tutorial_overlay_only(self):
+        frame = np.full((720, 1280, 3), (80, 105, 75), dtype=np.uint8)
+        frame[560:720] = (35, 38, 42)
+        cv2.rectangle(frame, (930, 160), (1260, 570), (180, 25, 210), thickness=-1)
+
+        self.assertEqual(
+            detect_collective_tutorial_continue_target(frame),
+            (640, 650),
+        )
+
+        no_dialog = frame.copy()
+        no_dialog[560:720] = (120, 140, 100)
+        self.assertIsNone(detect_collective_tutorial_continue_target(no_dialog))
+
+        later_page = frame.copy()
+        later_page[130:590, 870:1280] = (80, 105, 75)
+        later_page[560:720] = (20, 22, 24)
+        self.assertEqual(
+            detect_collective_tutorial_continue_target(later_page),
+            (640, 650),
+        )
+
+    def test_detects_prize_hunt_squad_confirmation_only(self):
+        frame = np.full((720, 1280, 3), (70, 90, 105), dtype=np.uint8)
+        cv2.rectangle(frame, (315, 160), (965, 215), (45, 70, 95), thickness=-1)
+        cv2.rectangle(frame, (350, 215), (930, 475), (145, 160, 175), thickness=-1)
+        cv2.rectangle(frame, (640, 480), (930, 535), (25, 185, 245), thickness=-1)
+
+        self.assertEqual(
+            detect_prize_hunt_squad_confirmation_target(frame),
+            (784, 508),
+        )
+        self.assertIsNone(
+            detect_prize_hunt_squad_confirmation_target(
+                np.full((720, 1280, 3), (70, 90, 105), dtype=np.uint8)
+            )
+        )
+
+        scaled = cv2.resize(frame, (640, 360), interpolation=cv2.INTER_AREA)
+        self.assertEqual(
+            detect_prize_hunt_squad_confirmation_target(scaled),
+            (392, 254),
+        )
+
     def test_detects_marked_alliance_project_and_ignores_other_red_shapes(self):
         frame = np.full((720, 1280, 3), (45, 50, 55), dtype=np.uint8)
         cv2.circle(frame, (474, 263), 7, (10, 25, 230), thickness=-1)

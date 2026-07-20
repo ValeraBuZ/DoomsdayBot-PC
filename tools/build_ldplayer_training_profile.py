@@ -18,6 +18,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from buzzbot.routines import (
     RESOURCE_RESULT_SEARCH_REGION,
     default_routine_tasks,
+    is_radar_task_id,
     upgrade_radar_runtime_metadata,
     upgrade_prize_hunt_metadata,
     upgrade_repeatable_claim_metadata,
@@ -989,6 +990,75 @@ DAILY_TASK_STEPS = {
     ),
 }
 
+_RADAR_ALL_STEPS = DAILY_TASK_STEPS.pop("radar")
+_RADAR_COMMON_STEP_IDS = {
+    "radar_screen_guard",
+    "card_guard",
+    "forward_guard",
+    "open_any_task",
+    "wait_in_progress",
+    "close_region_search",
+    "return_shelter",
+}
+_RADAR_REWARD_STEP_IDS = {
+    "task_special_reward_followup",
+    "task_car_reward_followup",
+    "task_supply_reward_final",
+    "task_person_gold_reward",
+    "task_skull_reward",
+    "task_skull_reward_current",
+    "task_car_reward",
+    "task_supply_ready",
+    "task_car_ready",
+    "task_zombie_ready",
+    "collect_completed",
+}
+_RADAR_QUICK_STEP_IDS = {
+    "task_supply",
+    "task_car",
+    "task_car_current",
+    "task_car_unstarted_live",
+    "task_special_unstarted_live",
+    "task_supply_unstarted_followup",
+    "task_car_unstarted_final",
+    "task_car_generic_shape",
+    "task_special_generic_shape",
+    "open_supply",
+    "open_car",
+    "collect_supply",
+    "transport_supplies",
+    "confirm_transport",
+}
+_RADAR_MARCH_STEP_IDS = {
+    "task_person_unstarted_followup",
+    "task_person_generic_shape",
+    "task_zombie",
+    "task_skull_current",
+    "task_skull_unstarted_live",
+    "task_survivor_current_live",
+    "task_special_current",
+    "task_fist_current",
+    "open_zombie",
+    "attack_zombie",
+    "rescue_survivors",
+    "create_squad",
+    "march",
+}
+
+
+def _radar_steps(step_ids):
+    allowed = _RADAR_COMMON_STEP_IDS | set(step_ids)
+    return tuple(step for step in _RADAR_ALL_STEPS if step[0] in allowed)
+
+
+DAILY_TASK_STEPS.update(
+    {
+        "radar_rewards": _radar_steps(_RADAR_REWARD_STEP_IDS),
+        "radar_quick": _radar_steps(_RADAR_QUICK_STEP_IDS),
+        "radar_marches": _radar_steps(_RADAR_MARCH_STEP_IDS),
+    }
+)
+
 TRAINING_DATA = {
     "train_infantry": {
         "selection_source": "left_crosshair.png",
@@ -1074,6 +1144,14 @@ PRIZE_HUNT_STEPS = (
     ("enter", "Войти в охоту за призом", "prize_hunt_menu.png", (465, 500, 811, 584), (0, 0), False),
     ("open_squad", "Запустить охоту или настроить отряд", "prize_hunt_pairing.png", (535, 515, 746, 567), (0, 0), True),
     ("prepare", "Заполнить отряд для охоты", "prize_hunt_ready.png", (861, 619, 1063, 667), (0, 0), False),
+    (
+        "no_deployable_squad",
+        "Нет развертываемого отряда для охоты",
+        "prize_hunt_no_deployable_squad.png",
+        (370, 299, 910, 369),
+        (0, 175),
+        True,
+    ),
     ("deploy", "Отправить отряд на охоту", "prize_hunt_manual_fill.png", (862, 619, 1063, 667), (0, 0), False),
     ("safe_exit", "Выйти после поражения без возрождения", "prize_hunt_result_after_exit.png", (615, 581, 871, 652), (0, 0), False),
     ("safe_exit_current", "Выйти после поражения без возрождения", "FocusFarm_prize_defeat.png", (430, 335, 598, 485), (0, 0), False),
@@ -1330,7 +1408,7 @@ def build_profile(destination):
                     str(uuid.uuid5(PROFILE_NAMESPACE, "vip_rewards:dismiss_info")),
                     str(uuid.uuid5(PROFILE_NAMESPACE, "vip_rewards:receive_free")),
                 ]
-            if task_id == "radar":
+            if is_radar_task_id(task_id):
                 configured_image["allow_repeat"] = True
                 configured_image["block_seconds"] = 2.0
                 configured_image["confidence"] = 0.82
@@ -1579,7 +1657,10 @@ def build_profile(destination):
                 configured_image["orb_match_threshold"] = 3
             manifest["images"].append(configured_image)
             payloads.append((output_path, entry_name))
-            if task_id not in {"alliance_donations", "radar", "mail_rewards", "completed_tasks"}:
+            if (
+                task_id not in {"alliance_donations", "mail_rewards", "completed_tasks"}
+                and not is_radar_task_id(task_id)
+            ):
                 completion_uid = uid
             print(f"{task_id:15s} {step_id:15s} score={score:.3f} size={crop.shape[1]}x{crop.shape[0]}")
         task["completion_uid"] = completion_uid
