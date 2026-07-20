@@ -1549,6 +1549,18 @@ def _normalize_task(source, default):
         # Prize Hunt uses its own event squad and is available even when all
         # regular world marches are occupied. This also migrates old configs.
         uses_march = False
+    timeout_seconds = _positive_float(
+        source.get("timeout_seconds"),
+        default.get("timeout_seconds", 8.0),
+        1.0,
+    )
+    if task_id == "game_login":
+        # Older configs used 90 seconds, but stuck-start recovery intentionally
+        # begins later. Keep enough time for both automatic restart attempts.
+        timeout_seconds = max(
+            float(default.get("timeout_seconds", 330.0)),
+            timeout_seconds,
+        )
     return {
         "id": task_id,
         "name": name,
@@ -1563,11 +1575,7 @@ def _normalize_task(source, default):
             default.get("interval_minutes", 1.0),
             0.1,
         ),
-        "timeout_seconds": _positive_float(
-            source.get("timeout_seconds"),
-            default.get("timeout_seconds", 8.0),
-            1.0,
-        ),
+        "timeout_seconds": timeout_seconds,
         "march_duration_minutes": _positive_float(
             source.get("march_duration_minutes"),
             default.get("march_duration_minutes", 30.0),

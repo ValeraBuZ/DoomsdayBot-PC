@@ -20,7 +20,9 @@ from datetime import datetime
 from buzzbot.accounts import (
     apply_tasks as apply_account_tasks,
     default_account_profiles,
+    extract_google_accounts,
     find_account,
+    mask_google_account,
     requires_google_reauthentication,
     next_enabled_account,
     normalize_account_profiles,
@@ -98,7 +100,7 @@ from buzzbot.state import BotState, compute_runtime_seconds
 from buzzbot.storage import move_file_to_trash, save_json_with_backup
 
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-APP_VERSION = "3.2.4"
+APP_VERSION = "3.2.5"
 IMG_DIR = APP_DIR / "img"
 CONFIG_FILE = APP_DIR / "config.json"
 CONFIG_BACKUP_DIR = APP_DIR / "backups" / "config"
@@ -661,6 +663,11 @@ class AutoClicker:
         self.account_session_deadline = 0.0
         self.account_switch_task = None
         self.account_switch_error = ""
+        self.account_switch_selected_at = 0.0
+        self.account_switch_confirmed = False
+        self.account_switch_probe_ready = False
+        self.account_switch_candidates = []
+        self.account_switch_last_result = ""
 
         # Источник изображения и ввода: обычный экран Windows или прямой ADB.
         discovered_adb = find_adb_executable()
@@ -1501,7 +1508,7 @@ class AutoClicker:
         return dist <= color_threshold
 
     def _validate_detected_match(self, img_config, bbox):
-        if self.orb_enabled:
+        if self.orb_enabled and img_config.get("use_orb", True):
             orb_threshold = int(img_config.get("orb_match_threshold", self.orb_match_threshold))
             if not self._check_orb_match(img_config["path"], bbox, orb_threshold):
                 return False, "ORB"
@@ -2384,6 +2391,11 @@ class AutoClicker:
         if not templates:
             self.set_status_message(f"Не обучено переключение аккаунта: {profile.get('name')}", force=True)
             return False
+        # These controls are small, flat UI elements. ORB cannot reach the
+        # global keypoint threshold on them, while template and color checks
+        # remain stable across accounts.
+        for image in templates:
+            image["use_orb"] = False
         self.account_switch_task = {
             "id": "__account_switch__",
             "name": f"Переключение: {profile.get('name')}",
@@ -2393,7 +2405,7 @@ class AutoClicker:
             "uses_march": False,
             "priority": 1,
             "interval_minutes": 1.0,
-            "timeout_seconds": 20.0,
+            "timeout_seconds": 120.0,
             "march_duration_minutes": 1.0,
             "completion_uid": str(profile.get("switch_completion_uid") or ""),
             "settings": {
@@ -2401,22 +2413,31 @@ class AutoClicker:
                 "chooser_index": int(profile.get("chooser_index", 1)),
             },
         }
-        if not self.account_switch_task["completion_uid"]:
-            completion = next(
-                (image for image in templates if image.get("account_switch_complete")),
-                None,
-            )
-            if completion:
-                self.account_switch_task["completion_uid"] = completion.get("uid", "")
         self.routine_only_task_id = "__account_switch__"
         self.current_routine_task_id = None
         self.account_switch_error = ""
+        self.account_switch_selected_at = 0.0
+        self.account_switch_confirmed = False
+        self.account_switch_probe_ready = False
         return True
 
     def start_account_switch(self, account_id):
         profile = find_account(self.account_profiles, account_id)
         if not profile or not self._prepare_account_switch(profile):
             return False
+        self.routine_mode = True
+        self.routine_next_run["__account_switch__"] = 0.0
+        return self.start()
+
+    def start_account_probe(self, account_id=None):
+        profile = find_account(
+            self.account_profiles,
+            account_id or self.current_account_id,
+        )
+        if not profile or not self._prepare_account_switch(profile):
+            return False
+        self.account_switch_task["name"] = "Проверка аккаунтов Google"
+        self.account_switch_task["settings"]["probe_only"] = True
         self.routine_mode = True
         self.routine_next_run["__account_switch__"] = 0.0
         return self.start()
@@ -2807,17 +2828,35 @@ class AutoClicker:
 
         if task.get("id") == "__account_switch__":
             target_account_id = task.get("settings", {}).get("target_account_id")
+            probe_only = bool(task.get("settings", {}).get("probe_only", False))
             switch_error = self.account_switch_error
+            switch_confirmed = self.account_switch_confirmed
             self.current_routine_task_id = None
             self.routine_current_had_action = False
             self.account_switch_task = None
             self.account_switch_error = ""
+            self.account_switch_selected_at = 0.0
+            self.account_switch_confirmed = False
+            self.account_switch_probe_ready = False
             self.routine_only_task_id = None
             if switch_error:
                 self.account_session_deadline = now + 300.0
+                self.account_switch_last_result = switch_error
                 self.set_status_message(switch_error, force=True)
-            elif target_account_id:
+            elif probe_only:
+                count = len(self.account_switch_candidates)
+                self.account_switch_last_result = f"Найдено аккаунтов Google: {count}"
+                self.set_status_message(self.account_switch_last_result, force=True)
+            elif target_account_id and switch_confirmed:
                 self.select_account_profile(target_account_id)
+                profile = find_account(self.account_profiles, target_account_id)
+                self.account_switch_last_result = (
+                    f"Аккаунт переключён: {profile.get('name')}" if profile else "Аккаунт переключён"
+                )
+                self.set_status_message(self.account_switch_last_result, force=True)
+            else:
+                self.account_switch_last_result = "Переключение не подтверждено главным экраном"
+                self.set_status_message(self.account_switch_last_result, force=True)
             if not self.account_rotation_enabled:
                 self.routine_mode = False
                 self.stop_event.set()
@@ -3250,6 +3289,29 @@ class AutoClicker:
         self.set_status_message("Вход в игру: закрываю пустое окно авторизации", force=True)
         logger.info("Game login fallback closed blank webview at (%s, %s)", target_x, target_y)
         self._interruptible_sleep(2.0)
+        return True
+
+    def _try_account_switch_visual_fallback(self, task):
+        if task.get("id") != "__account_switch__" or self.account_switch_selected_at:
+            return False
+        try:
+            frame, _origin = self._capture_screen_bgr(force=True)
+        except Exception:
+            logger.exception("Account switch fallback could not capture the screen")
+            return False
+        if not self._is_main_screen_visible():
+            return False
+        scale_x = frame.shape[1] / 1280.0
+        scale_y = frame.shape[0] / 720.0
+        target = (int(round(48 * scale_x)), int(round(48 * scale_y)))
+        if not self._tap_routine_fallback(
+            target,
+            ("account_switch_profile", *target),
+            "Переключение аккаунта: открываю профиль командира",
+        ):
+            return False
+        logger.info("Account switch fallback opened commander profile at %s", target)
+        self._interruptible_sleep(1.0)
         return True
 
     def _tap_routine_fallback(self, target, coord_key, status_message):
@@ -4199,6 +4261,14 @@ class AutoClicker:
 
                 if (
                     self.routine_mode
+                    and current_routine_task.get("id") == "__account_switch__"
+                    and not action_occurred
+                    and self._try_account_switch_visual_fallback(current_routine_task)
+                ):
+                    continue
+
+                if (
+                    self.routine_mode
                     and current_routine_task.get("id") == "game_login"
                     and not action_occurred
                     and self._try_game_login_visual_fallback(current_routine_task)
@@ -4241,6 +4311,31 @@ class AutoClicker:
                     if refresh_after_action or self.current_routine_task_id is None:
                         continue
                     idle = time.time() - self.routine_last_action_time
+                    if current_routine_task.get("id") == "__account_switch__":
+                        elapsed = time.time() - self.routine_task_started_at
+                        timeout = float(current_routine_task.get("timeout_seconds", 120.0))
+                        if self.account_switch_error or self.account_switch_probe_ready:
+                            self._finish_current_routine(time.time())
+                            continue
+                        if self.account_switch_selected_at:
+                            if (
+                                time.time() - self.account_switch_selected_at >= 8.0
+                                and self._is_main_screen_visible()
+                            ):
+                                self.account_switch_confirmed = True
+                                self._finish_current_routine(time.time())
+                            elif elapsed >= timeout:
+                                self.account_switch_error = (
+                                    "Переключение не завершено: главный экран игры не появился"
+                                )
+                                self._finish_current_routine(time.time())
+                            continue
+                        if elapsed >= timeout:
+                            self.account_switch_error = (
+                                "Переключение не выполнено: окно выбора Google не найдено"
+                            )
+                            self._finish_current_routine(time.time())
+                        continue
                     if current_routine_task.get("id") == "game_login":
                         if self._is_main_screen_visible():
                             self.routine_idle_confirmation_count += 1
@@ -4914,7 +5009,37 @@ class AutoClicker:
             frame, _origin = self._capture_screen_bgr(force=True)
             scale_x = frame.shape[1] / 1280.0
             scale_y = frame.shape[0] / 720.0
-            chooser_index = min(20, max(1, int(self._current_task_settings().get("chooser_index", 1))))
+            settings = self._current_task_settings()
+            chooser_index = min(20, max(1, int(settings.get("chooser_index", 1))))
+            candidates = []
+            if self.uses_adb:
+                try:
+                    candidates = extract_google_accounts(self.adb_client.ui_xml())
+                except AdbError as exc:
+                    logger.warning("Не удалось прочитать список аккаунтов Google: %s", exc)
+            self.account_switch_candidates = candidates
+            if settings.get("probe_only", False):
+                self.account_switch_probe_ready = True
+                self.routine_action_completes_task = True
+                img_config["last_used"] = time.time()
+                labels = ", ".join(
+                    f"№{item['chooser_index']} {mask_google_account(item['email'])}"
+                    for item in candidates
+                )
+                message = f"Найдено аккаунтов Google: {len(candidates)}"
+                if labels:
+                    message = f"{message} ({labels})"
+                self.set_status_message(message, force=True)
+                logger.info("Google account probe: %s", message)
+                return
+            if candidates and chooser_index > len(candidates):
+                self.account_switch_error = (
+                    f"Аккаунт Google №{chooser_index} не найден; доступно: {len(candidates)}"
+                )
+                self.routine_action_completes_task = True
+                img_config["last_used"] = time.time()
+                self.set_status_message(self.account_switch_error, force=True)
+                return
             account_x = int(640 * scale_x)
             account_y = int((353 + (chooser_index - 1) * 103) * scale_y)
             if self.uses_adb:
@@ -4923,6 +5048,7 @@ class AutoClicker:
                 pyautogui.click(account_x, account_y)
             self._invalidate_capture()
             img_config["last_used"] = time.time()
+            self.account_switch_selected_at = time.time()
             self.set_status_message(f"Выбран аккаунт Google №{chooser_index}", force=True)
             self._interruptible_sleep(8.0)
             if self.uses_adb and not self.stop_event.is_set():
@@ -4931,6 +5057,7 @@ class AutoClicker:
                         self.account_switch_error = (
                             "Переключение остановлено: Google требует подтвердить вход вручную"
                         )
+                        self.routine_action_completes_task = True
                 except AdbError as exc:
                     logger.warning("Не удалось проверить экран входа Google: %s", exc)
             return

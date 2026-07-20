@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import re
 import uuid
+import xml.etree.ElementTree as ET
+
+
+_EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
 
 
 def _account_id(name):
@@ -122,3 +127,33 @@ def requires_google_reauthentication(ui_xml):
         "confirm your identity",
     )
     return any(marker in text for marker in markers)
+
+
+def extract_google_accounts(ui_xml):
+    """Return Google accounts in the same top-to-bottom order as the chooser."""
+    try:
+        root = ET.fromstring(str(ui_xml or ""))
+    except ET.ParseError:
+        return []
+
+    accounts = []
+    seen = set()
+    for node in root.iter():
+        values = (node.attrib.get("text", ""), node.attrib.get("content-desc", ""))
+        for value in values:
+            for email in _EMAIL_RE.findall(str(value or "")):
+                normalized = email.casefold()
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                accounts.append({"chooser_index": len(accounts) + 1, "email": email})
+    return accounts
+
+
+def mask_google_account(email):
+    value = str(email or "").strip()
+    if "@" not in value:
+        return value
+    local, domain = value.split("@", 1)
+    visible = local[:1]
+    return f"{visible}{'*' * max(3, len(local) - 1)}@{domain}"

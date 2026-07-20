@@ -3,6 +3,8 @@ import unittest
 from buzzbot.accounts import (
     apply_tasks,
     default_account_profiles,
+    extract_google_accounts,
+    mask_google_account,
     next_enabled_account,
     normalize_account_profiles,
     requires_google_reauthentication,
@@ -48,6 +50,20 @@ class AccountProfileTests(unittest.TestCase):
         self.assertTrue(requires_google_reauthentication('<node text="Подтвердите свою личность" />'))
         self.assertTrue(requires_google_reauthentication('<node text="Verify it\'s you" />'))
         self.assertFalse(requires_google_reauthentication('<node text="Doomsday: Last Survivors" />'))
+
+    def test_google_accounts_are_extracted_in_chooser_order(self):
+        xml = (
+            '<hierarchy><node text="First" content-desc="first@example.com" />'
+            '<node text="second@example.com" />'
+            '<node text="FIRST@example.com" /></hierarchy>'
+        )
+        self.assertEqual(extract_google_accounts(xml), [
+            {"chooser_index": 1, "email": "first@example.com"},
+            {"chooser_index": 2, "email": "second@example.com"},
+        ])
+
+    def test_google_account_mask_hides_local_part(self):
+        self.assertEqual(mask_google_account("person@example.com"), "p*****@example.com")
 
 
 if __name__ == "__main__":

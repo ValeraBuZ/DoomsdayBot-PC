@@ -127,6 +127,16 @@ class RoutineTaskTests(unittest.TestCase):
         )
         self.assertTrue(research["empty_home_is_success"])
 
+    def test_legacy_game_login_timeout_allows_automatic_restart(self):
+        login = next(
+            task
+            for task in normalize_routine_tasks(
+                [{"id": "game_login", "timeout_seconds": 90.0}]
+            )
+            if task["id"] == "game_login"
+        )
+        self.assertEqual(login["timeout_seconds"], 330.0)
+
     def test_resource_upgrade_clamps_legacy_level_to_seven(self):
         tasks = default_routine_tasks()
         oil = next(task for task in tasks if task["id"] == "oil")

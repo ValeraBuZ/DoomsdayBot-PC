@@ -10,6 +10,7 @@ from tkinter import messagebox, simpledialog, ttk
 
 from PIL import Image, ImageTk
 
+from buzzbot.accounts import mask_google_account
 from buzzbot.routines import effective_task_group, task_setting_specs
 
 
@@ -205,7 +206,7 @@ class AccountsDialog:
         self.dialog.resizable(False, False)
         self.dialog.transient(parent)
         self.dialog.grab_set()
-        _center(self.dialog, 530, 400)
+        _center(self.dialog, 620, 440)
         self._build()
 
     def _build(self):
@@ -216,6 +217,16 @@ class AccountsDialog:
             text="Один LDPlayer, несколько сохранённых аккаунтов",
             style="CompactTitle.TLabel",
         ).pack(anchor="w")
+        details = self.bot.account_switch_last_result or "Проверка Google ещё не запускалась"
+        if self.bot.account_switch_candidates:
+            labels = ", ".join(
+                f"№{item['chooser_index']} {mask_google_account(item['email'])}"
+                for item in self.bot.account_switch_candidates
+            )
+            details = f"{details}: {labels}"
+        ttk.Label(body, text=details, foreground="#72818A", wraplength=580).pack(
+            anchor="w", pady=(5, 0)
+        )
         self.listbox = tk.Listbox(body, height=10, font=("Segoe UI", 10), activestyle="none")
         self.listbox.pack(fill=tk.BOTH, expand=True, pady=12)
         self._reload()
@@ -224,7 +235,8 @@ class AccountsDialog:
         buttons.pack(fill=tk.X)
         ttk.Button(buttons, text="Добавить", command=self.add).pack(side=tk.LEFT)
         ttk.Button(buttons, text="Удалить", command=self.delete).pack(side=tk.LEFT, padx=6)
-        ttk.Button(buttons, text="Снять шаг входа", command=self.capture_switch).pack(side=tk.LEFT, padx=6)
+        ttk.Button(buttons, text="Изменить", command=self.edit).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="Найти Google", command=self.probe).pack(side=tk.LEFT, padx=6)
         ttk.Button(buttons, text="Сменить в игре", style="Primary.TButton", command=self.switch_in_game).pack(side=tk.RIGHT)
         ttk.Button(buttons, text="Профиль", command=self.select).pack(side=tk.RIGHT, padx=6)
         self.dialog.bind("<Escape>", lambda _event: self.dialog.destroy())
@@ -235,7 +247,8 @@ class AccountsDialog:
             mark = "●" if profile.get("id") == self.bot.current_account_id else " "
             self.listbox.insert(
                 tk.END,
-                f"{mark} {profile.get('name')} | LD {profile.get('ldplayer_index')} | {profile.get('adb_serial')}",
+                f"{mark} {profile.get('name')} | Google №{profile.get('chooser_index')} | "
+                f"LD {profile.get('ldplayer_index')} | {profile.get('adb_serial')}",
             )
         if self.bot.account_profiles:
             current = next(
@@ -264,8 +277,12 @@ class AccountsDialog:
         )
         if chooser_index is None:
             return
+        current = self.bot.get_current_account() or {}
+        ldplayer_index = self.bot.player_index
+        if ldplayer_index is None:
+            ldplayer_index = current.get("ldplayer_index", 5)
         profile = self.bot.add_account_profile(
-            name.strip(), 5, self.bot.adb_serial, 30.0, chooser_index=chooser_index
+            name.strip(), ldplayer_index, self.bot.adb_serial, 30.0, chooser_index=chooser_index
         )
         self.bot.select_account_profile(profile["id"])
         self._reload()
@@ -280,6 +297,35 @@ class AccountsDialog:
         if not self.bot.remove_account_profile(profile["id"]):
             messagebox.showwarning("Аккаунты", "Нельзя удалить единственный профиль.", parent=self.dialog)
             return
+        self._reload()
+        self.refresh()
+
+    def edit(self):
+        profile = self._selected()
+        if not profile:
+            return
+        name = simpledialog.askstring(
+            "Изменить аккаунт",
+            "Название аккаунта:",
+            parent=self.dialog,
+            initialvalue=profile.get("name", ""),
+        )
+        if not name or not name.strip():
+            return
+        chooser_index = simpledialog.askinteger(
+            "Изменить аккаунт",
+            "Номер строки аккаунта Google (сверху):",
+            parent=self.dialog,
+            minvalue=1,
+            maxvalue=20,
+            initialvalue=int(profile.get("chooser_index", 1)),
+        )
+        if chooser_index is None:
+            return
+        profile["name"] = name.strip()
+        profile["chooser_index"] = chooser_index
+        profile["switch_group"] = f"Аккаунт: {name.strip()}"
+        self.bot.save_config()
         self._reload()
         self.refresh()
 
@@ -299,6 +345,20 @@ class AccountsDialog:
             messagebox.showwarning(
                 "Аккаунты",
                 "Сначала снимите последовательность входа для этого аккаунта.",
+                parent=self.dialog,
+            )
+            return
+        self.dialog.destroy()
+        self.refresh()
+
+    def probe(self):
+        profile = self._selected()
+        if not profile:
+            return
+        if not self.bot.start_account_probe(profile["id"]):
+            messagebox.showwarning(
+                "Аккаунты",
+                "Не удалось запустить проверку. Убедитесь, что открыт главный экран игры.",
                 parent=self.dialog,
             )
             return

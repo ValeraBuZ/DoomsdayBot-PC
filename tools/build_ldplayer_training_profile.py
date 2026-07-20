@@ -1339,9 +1339,9 @@ def build_profile(destination):
         configured_image = image_config(
             uid, entry_name, ACCOUNT_SWITCH_GROUP, description, offset, grayscale, 1.0
         )
+        configured_image["use_orb"] = False
         if step_id == "chooser":
             configured_image["action"] = "google_account_select"
-            configured_image["account_switch_complete"] = True
         manifest["images"].append(configured_image)
         payloads.append((output_path, entry_name))
         print(f"{'account_switch':15s} {step_id:15s} score={score:.3f} size={crop.shape[1]}x{crop.shape[0]}")
