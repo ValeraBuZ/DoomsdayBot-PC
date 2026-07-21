@@ -6,6 +6,8 @@ import unittest
 import uuid
 import zipfile
 
+from buzzbot.version import APP_VERSION
+
 import cv2
 import numpy as np
 
@@ -103,7 +105,7 @@ class ProfileBundleTests(unittest.TestCase):
         with zipfile.ZipFile(profile_path) as archive:
             manifest = json.loads(archive.read("profile.json"))
 
-        self.assertEqual(manifest["app_version"], "3.3.1")
+            self.assertEqual(manifest["app_version"], APP_VERSION)
         tasks = {task["id"]: task for task in manifest["routine_tasks"]}
         images = {image["uid"]: image for image in manifest["images"]}
         donation = tasks["alliance_donations"]

@@ -680,7 +680,7 @@ class RoutineTaskTests(unittest.TestCase):
 
         reset_radar_card_runtime_steps(completed)
 
-        self.assertEqual(completed, {"radar_marker"})
+        self.assertEqual(completed, set())
 
     def test_radar_retries_running_marches_before_the_next_fixed_reset(self):
         task = next(task for task in default_routine_tasks() if task["id"] == "radar_marches")
@@ -868,6 +868,7 @@ class RoutineTaskTests(unittest.TestCase):
         uids = {
             step: str(uuid.uuid5(namespace, f"prize_hunt:{step}"))
             for step in (
+                "campaign",
                 "enter",
                 "open_squad",
                 "prepare",
@@ -895,8 +896,11 @@ class RoutineTaskTests(unittest.TestCase):
         ]
         tasks = [{"id": "prize_hunt", "timeout_seconds": 10.0}]
 
-        self.assertEqual(upgrade_prize_hunt_metadata(images, tasks), 8)
+        images.insert(0, {"uid": uids["campaign"], "confidence": 0.88})
+
+        self.assertEqual(upgrade_prize_hunt_metadata(images, tasks), 9)
         by_uid = {image["uid"]: image for image in images}
+        self.assertEqual(by_uid[uids["campaign"]]["confidence"], 0.84)
         self.assertEqual(by_uid[uids["open_squad"]]["action"], "prize_start_or_prepare")
         self.assertTrue(by_uid[uids["open_squad"]]["grayscale"])
         self.assertEqual(by_uid[uids["open_squad"]]["confidence"], 0.84)
@@ -1048,10 +1052,10 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertEqual(images[5]["requires_runtime_steps"], ["radar_forward"])
         self.assertEqual(images[5]["delay"], 1.5)
         self.assertEqual(images[6]["action"], "radar_return_shelter")
-        self.assertTrue(images[6]["completes_routine"])
+        self.assertNotIn("completes_routine", images[6])
         self.assertEqual(
             images[6]["requires_runtime_steps"],
-            ["radar_action", "radar_march"],
+            ["radar_action", "radar_march", "radar_forward"],
         )
         self.assertEqual(images[2]["action"], "radar_defer_in_progress")
         self.assertEqual(tasks[0]["settings"]["in_progress_retry_minutes"], 5)

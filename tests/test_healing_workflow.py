@@ -7,10 +7,10 @@ from buzzbot_app import AutoClicker
 
 
 class FakeHealingAdbClient:
-    def __init__(self, fail_row=None):
-        self.fail_row = fail_row
+    def __init__(self, available_rows=4):
+        self.available_row_y = {173, 263, 353, 443}
+        self.available_row_y = set(sorted(self.available_row_y)[:available_rows])
         self.editor_open = False
-        self.row_taps = 0
         self.taps = []
         self.inputs = []
         self.clear_calls = 0
@@ -19,8 +19,7 @@ class FakeHealingAdbClient:
     def tap(self, x, y):
         self.taps.append((x, y))
         if x == 1085 and y in {173, 263, 353, 443}:
-            self.row_taps += 1
-            self.editor_open = self.row_taps != self.fail_row
+            self.editor_open = y in self.available_row_y
         elif (x, y) == (1198, 669):
             if not self.editor_open:
                 self.unsafe_ok_taps += 1
@@ -37,10 +36,10 @@ class FakeHealingAdbClient:
 
 
 class HealingWorkflowTests(unittest.TestCase):
-    def make_bot(self, fail_row=None):
+    def make_bot(self, available_rows=4):
         bot = AutoClicker.__new__(AutoClicker)
         bot.input_backend = "adb"
-        bot.adb_client = FakeHealingAdbClient(fail_row=fail_row)
+        bot.adb_client = FakeHealingAdbClient(available_rows=available_rows)
         bot.stop_event = threading.Event()
         bot.stop_hotkey_pressed = False
         bot._invalidate_capture = lambda: None
@@ -65,11 +64,18 @@ class HealingWorkflowTests(unittest.TestCase):
         self.assertEqual(bot.adb_client.clear_calls, 4)
         self.assertEqual(bot.adb_client.unsafe_ok_taps, 0)
 
-    def test_missing_editor_aborts_without_blind_ok_tap(self):
-        bot, frame = self.make_bot(fail_row=2)
+    def test_limit_is_redistributed_when_only_one_troop_row_is_available(self):
+        bot, frame = self.make_bot(available_rows=1)
+
+        self.assertTrue(bot._configure_healing_troop_count(2000, frame))
+        self.assertEqual(bot.adb_client.inputs, ["500", "2000"])
+        self.assertEqual(bot.adb_client.unsafe_ok_taps, 0)
+
+    def test_no_editable_rows_aborts_without_blind_ok_tap(self):
+        bot, frame = self.make_bot(available_rows=0)
 
         self.assertFalse(bot._configure_healing_troop_count(2000, frame))
-        self.assertEqual(bot.adb_client.inputs, ["500"])
+        self.assertEqual(bot.adb_client.inputs, [])
         self.assertEqual(bot.adb_client.unsafe_ok_taps, 0)
 
 

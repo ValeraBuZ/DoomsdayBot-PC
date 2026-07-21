@@ -118,6 +118,7 @@ LEGACY_RADAR_TEMPLATE_UIDS = frozenset(
 
 RADAR_CARD_RUNTIME_STEPS = frozenset(
     {
+        "radar_marker",
         "radar_forward",
         "radar_action",
         "radar_squad",
@@ -1349,6 +1350,18 @@ def upgrade_prize_hunt_metadata(images, tasks):
     images_by_uid = {str(image.get("uid") or ""): image for image in images}
     upgraded = 0
 
+    campaign = images_by_uid.get(
+        str(uuid.uuid5(PROFILE_NAMESPACE, "prize_hunt:campaign"))
+    )
+    if campaign is not None:
+        # Decorations and notification badges alter this fixed bottom button.
+        # ORB and color checks still provide the strict secondary validation.
+        campaign["confidence"] = min(
+            0.84,
+            float(campaign.get("confidence", 0.88) or 0.88),
+        )
+        upgraded += 1
+
     open_squad = images_by_uid.get(
         str(uuid.uuid5(PROFILE_NAMESPACE, "prize_hunt:open_squad"))
     )
@@ -1578,9 +1591,13 @@ def upgrade_radar_runtime_metadata(images, tasks):
                 image["runtime_step_mode"] = "any"
             elif step_id == "return_shelter":
                 image["action"] = "radar_return_shelter"
-                image["requires_runtime_steps"] = ["radar_action", "radar_march"]
+                image["requires_runtime_steps"] = [
+                    "radar_action",
+                    "radar_march",
+                    "radar_forward",
+                ]
                 image["runtime_step_mode"] = "any"
-                image["completes_routine"] = True
+                image.pop("completes_routine", None)
             upgraded += 1
 
     for task in radar_tasks:

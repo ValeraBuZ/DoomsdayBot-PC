@@ -3254,6 +3254,17 @@ class AutoClicker:
                 continue
             blocker_location, blocker_bbox, _blocker_confidence = self._locate_image(image)
             if blocker_location is not None:
+                blocker_valid, reject_reason = self._validate_detected_match(
+                    image,
+                    blocker_bbox,
+                )
+                if not blocker_valid:
+                    logger.info(
+                        "Idle completion ignores rejected template %s: %s",
+                        image.get("description"),
+                        reject_reason,
+                    )
+                    continue
                 if is_radar_task_id(task.get("id")):
                     if frame is None:
                         frame, _frame_origin = self._capture_screen_bgr(force=True)
@@ -5172,10 +5183,7 @@ class AutoClicker:
                 )
                 return False
 
-        for row_index, (row_y, quota) in enumerate(
-            zip(row_positions, row_quotas),
-            start=1,
-        ):
+        def configure_row(row_index, row_y, quota):
             if self.stop_event.is_set() or self.stop_hotkey_pressed:
                 return False
             target_y = int(round(row_y * scale_y))
@@ -5189,14 +5197,10 @@ class AutoClicker:
             editor_frame, _origin = self._capture_screen_bgr(force=True)
             if not healing_number_editor_is_open(editor_frame):
                 logger.warning(
-                    "Healing row %s was not editable; aborting before confirmation",
+                    "Healing row %s is not available",
                     row_index,
                 )
-                self.set_status_message(
-                    f"Лечение не запущено: поле количества {row_index} не открылось",
-                    force=True,
-                )
-                return False
+                return None
 
             if self.uses_adb:
                 self.adb_client.clear_focused_text(20)
@@ -5240,6 +5244,45 @@ class AutoClicker:
                 )
                 return False
             logger.info("Healing row %s configured with quota %s", row_index, quota)
+            return True
+
+        configured_rows = []
+        for row_index, (row_y, quota) in enumerate(
+            zip(row_positions, row_quotas),
+            start=1,
+        ):
+            result = configure_row(row_index, row_y, quota)
+            if result is None:
+                break
+            if result is False:
+                return False
+            configured_rows.append((row_index, row_y))
+
+        if not configured_rows:
+            self.set_status_message(
+                "Лечение не запущено: доступные строки раненых не найдены",
+                force=True,
+            )
+            return False
+
+        if len(configured_rows) < len(row_positions):
+            base_quota, extra = divmod(max(1, int(troop_count)), len(configured_rows))
+            actual_quotas = [
+                base_quota + (1 if index < extra else 0)
+                for index in range(len(configured_rows))
+            ]
+            logger.info(
+                "Healing redistributes limit %s across %s available rows",
+                troop_count,
+                len(configured_rows),
+            )
+            for (row_index, row_y), quota in zip(configured_rows, actual_quotas):
+                if configure_row(row_index, row_y, quota) is not True:
+                    self.set_status_message(
+                        f"Лечение не запущено: не удалось уточнить количество в строке {row_index}",
+                        force=True,
+                    )
+                    return False
         return True
 
     def _execute_action(self, img_config, location):
@@ -5558,24 +5601,49 @@ class AutoClicker:
                 )
                 restore_by_context = getattr(self, "zombie_level_restore", {})
                 self.zombie_level_restore = restore_by_context
-                pending_restore = min(3, max(0, int(restore_by_context.get(context, 0) or 0)))
+                previous_level_exists = context in restore_by_context
+                current_offset = min(
+                    fallback_levels,
+                    max(0, int(restore_by_context.get(context, 0) or 0)),
+                )
 
-                if pending_restore:
+                if previous_level_exists and fallback_levels > 0:
+                    if current_offset >= fallback_levels:
+                        self.set_status_message(
+                            f"Зомби: возвращаю стартовый уровень (+{current_offset})",
+                            force=True,
+                        )
+                        for _ in range(current_offset):
+                            click(plus_x, level_y)
+                            self._interruptible_sleep(0.35)
+                            if self.stop_event.is_set() or self.stop_hotkey_pressed:
+                                return False
+                        current_offset = 0
+                    else:
+                        current_offset += 1
+                        click(minus_x, level_y)
+                        self._interruptible_sleep(0.35)
+                        if self.stop_event.is_set() or self.stop_hotkey_pressed:
+                            return False
+                    restore_by_context[context] = current_offset
+                    self.save_config()
+                elif current_offset:
                     self.set_status_message(
-                        f"Зомби: возвращаю стартовый уровень (+{pending_restore})",
+                        f"Зомби: возвращаю стартовый уровень (+{current_offset})",
                         force=True,
                     )
-                    for _ in range(pending_restore):
+                    for _ in range(current_offset):
                         click(plus_x, level_y)
                         self._interruptible_sleep(0.35)
                         if self.stop_event.is_set() or self.stop_hotkey_pressed:
                             return False
+                    current_offset = 0
                     restore_by_context.pop(context, None)
                     self.save_config()
 
                 found_offset = None
-                for level_offset in range(fallback_levels + 1):
-                    if level_offset:
+                for level_offset in range(current_offset, fallback_levels + 1):
+                    if level_offset > current_offset:
                         click(minus_x, level_y)
                         restore_by_context[context] = level_offset
                         self.save_config()
@@ -5614,6 +5682,11 @@ class AutoClicker:
                     self._interruptible_sleep(img_config.get("delay", self.sleep_found))
                     return True
 
+                # Keep the chosen level in the game and rotate to the next
+                # configured level for the following squad. This prevents the
+                # search from selecting the same zombie for every free march.
+                restore_by_context[context] = found_offset
+                self.save_config()
                 if self.uses_adb:
                     self.adb_client.tap(display.width // 2, int(round(display.height * 0.49)))
                 else:

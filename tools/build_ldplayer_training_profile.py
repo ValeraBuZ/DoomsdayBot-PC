@@ -25,6 +25,7 @@ from buzzbot.routines import (
     upgrade_resource_runtime_metadata,
     upgrade_strict_runtime_metadata,
 )
+from buzzbot.version import APP_VERSION
 
 
 TRAINING_DIR = PROJECT_ROOT / "build" / "training"
@@ -131,6 +132,14 @@ SYSTEM_STEPS = (
         "Phoenix675_beast_taming_popup.png",
         (690, 108, 1142, 166),
         (266, -60),
+        False,
+    ),
+    (
+        "limited_quantity_offer_close",
+        "Закрыть предложение с ограниченным набором",
+        "zZuB1_limited_quantity_offer.png",
+        (215, 90, 1065, 140),
+        (453, 50),
         False,
     ),
     (
@@ -1228,7 +1237,7 @@ def build_profile(destination):
     manifest = {
         "format": "doomsday-training-profile",
         "format_version": 1,
-        "app_version": "3.3.1",
+        "app_version": APP_VERSION,
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "source_screen": {"width": 1280, "height": 720},
         "routine_tasks": tasks,
@@ -1290,6 +1299,7 @@ def build_profile(destination):
             "last_igg_login",
             "glory_league_close",
             "beast_taming_close",
+            "limited_quantity_offer_close",
             "google_play_cancel",
         }:
             system_image["startup_only"] = True

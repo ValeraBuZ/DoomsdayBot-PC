@@ -87,7 +87,7 @@ class ZombieSearchTests(unittest.TestCase):
         self.assertNotIn((640, 353), bot.adb_client.taps)
         self.assertEqual(bot.zombie_level_restore, {})
 
-    def test_restores_previous_offset_before_the_next_hunt(self):
+    def test_rotates_to_the_next_lower_level_before_the_next_hunt(self):
         bot = self.make_bot(fallback_levels=3)
         context = routine_march_context_key("adb", "emulator-5564", "account-a")
         bot.zombie_level_restore[context] = 2
@@ -98,9 +98,24 @@ class ZombieSearchTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(
             bot.adb_client.taps,
-            [(784, 544), (784, 544), (640, 620), (640, 353)],
+            [(494, 544), (640, 620), (640, 353)],
         )
-        self.assertEqual(bot.zombie_level_restore, {})
+        self.assertEqual(bot.zombie_level_restore[context], 3)
+
+    def test_wraps_to_the_saved_starting_level_after_last_fallback(self):
+        bot = self.make_bot(fallback_levels=3)
+        context = routine_march_context_key("adb", "emulator-5564", "account-a")
+        bot.zombie_level_restore[context] = 3
+        bot._locate_image = lambda _image: (None, None, 0.0)
+
+        result = bot._execute_action(self.search_image(), SimpleNamespace(x=640, y=620))
+
+        self.assertTrue(result)
+        self.assertEqual(
+            bot.adb_client.taps,
+            [(784, 544), (784, 544), (784, 544), (640, 620), (640, 353)],
+        )
+        self.assertEqual(bot.zombie_level_restore[context], 0)
 
 
 if __name__ == "__main__":
