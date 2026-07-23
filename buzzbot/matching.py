@@ -81,6 +81,40 @@ def detect_login_session_expired_ok_target(frame_bgr):
     return int(round(center_x * scale_x)), int(round(center_y * scale_y))
 
 
+def detect_login_saved_account_continue_target(frame_bgr):
+    """Detect the Continue button on the saved IGG account confirmation page."""
+    frame, scale_x, scale_y = _reference_frame(frame_bgr)
+    if frame is None:
+        return None
+
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    account_card = gray[90:274, 238:1043]
+    continue_button = hsv[294:360, 238:1043]
+    other_account_button = hsv[379:445, 238:1043]
+
+    dark_card = account_card < 125
+    yellow_button = (
+        (continue_button[:, :, 0] >= 15)
+        & (continue_button[:, :, 0] <= 40)
+        & (continue_button[:, :, 1] >= 80)
+        & (continue_button[:, :, 2] >= 160)
+    )
+    neutral_button = (
+        (other_account_button[:, :, 1] <= 45)
+        & (other_account_button[:, :, 2] >= 150)
+        & (other_account_button[:, :, 2] <= 245)
+    )
+    if (
+        float(np.mean(dark_card)) < 0.65
+        or float(np.mean(yellow_button)) < 0.70
+        or float(np.mean(neutral_button)) < 0.70
+    ):
+        return None
+
+    return int(round(640 * scale_x)), int(round(326 * scale_y))
+
+
 def detect_collective_tutorial_continue_target(frame_bgr):
     """Detect the guided collective-mind overlay that blocks the map."""
     frame, scale_x, scale_y = _reference_frame(frame_bgr)

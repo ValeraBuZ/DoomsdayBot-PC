@@ -49,7 +49,7 @@ DEFAULT_TASKS = (
     "oil",
 )
 TASK_TIMEOUTS = {
-    "game_login": 360.0,
+    "game_login": 600.0,
     "vip_rewards": 60.0,
     "alliance_donations": 160.0,
     "radar_rewards": 180.0,
@@ -299,9 +299,12 @@ def run_task(
             selected.setdefault("settings", {}).update(
                 _task_settings(task_id, research_branch, resource_level, collective_level)
             )
+            minimum_timeout = 330.0 if task_id == "game_login" else 20.0
+            if task_id == "heal":
+                minimum_timeout = 8.0
             selected["timeout_seconds"] = max(
                 float(selected.get("timeout_seconds", 0.0) or 0.0),
-                330.0 if task_id == "game_login" else 20.0,
+                minimum_timeout,
             )
 
             group = effective_task_group(selected)

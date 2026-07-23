@@ -7,6 +7,7 @@ from pathlib import Path
 import platform
 import re
 import shutil
+import string
 import uuid
 
 
@@ -40,6 +41,15 @@ def detect_sync_folders():
             home / "Google Drive",
         )
     )
+    if os.name == "nt":
+        # Google Drive for desktop exposes "My Drive" as a folder on a
+        # mounted drive (for example G:\My Drive), not below the user profile.
+        mounted_folder_names = ("My Drive", "Мой диск", "Google Drive")
+        for letter in string.ascii_uppercase:
+            drive_root = Path(f"{letter}:\\")
+            if not drive_root.is_dir():
+                continue
+            candidates.extend(drive_root / name for name in mounted_folder_names)
     unique = []
     seen = set()
     for candidate in candidates:
@@ -53,6 +63,30 @@ def detect_sync_folders():
         seen.add(key)
         unique.append(resolved)
     return unique
+
+
+def sync_folder_provider(path, detected_roots=None):
+    """Return the cloud client backing *path*, when it can be identified."""
+    try:
+        resolved = Path(path).expanduser().resolve()
+    except (OSError, TypeError, ValueError):
+        return None
+    roots = detect_sync_folders() if detected_roots is None else detected_roots
+    for root in roots:
+        try:
+            known_root = Path(root).expanduser().resolve()
+            resolved.relative_to(known_root)
+        except (OSError, TypeError, ValueError):
+            continue
+        normalized = str(known_root).casefold()
+        if "yandex" in normalized:
+            return "Yandex Disk"
+        if "onedrive" in normalized:
+            return "OneDrive"
+        if "google" in normalized or known_root.name.casefold() in {"my drive", "мой диск"}:
+            return "Google Drive"
+        return "облачный клиент"
+    return None
 
 
 @dataclass(frozen=True)

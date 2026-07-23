@@ -124,11 +124,21 @@ def finalize_portable_layout(preserve_runtime=True):
     stage_templates()
     if preserve_runtime:
         preserve_runtime_data()
+        merge_runtime_additions()
     validate_portable_layout()
     if DIST_DIR.exists():
-        shutil.rmtree(DIST_DIR)
+        try:
+            shutil.rmtree(DIST_DIR)
+        except PermissionError:
+            # Explorer can keep the now-empty destination directory open.
+            if any(DIST_DIR.iterdir()):
+                raise
     DIST_ROOT.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(STAGE_DIR), str(DIST_DIR))
+    if DIST_DIR.exists():
+        shutil.copytree(STAGE_DIR, DIST_DIR, dirs_exist_ok=True)
+        shutil.rmtree(STAGE_DIR)
+    else:
+        shutil.move(str(STAGE_DIR), str(DIST_DIR))
     shutil.rmtree(STAGE_ROOT, ignore_errors=True)
     shutil.make_archive(
         str(ARCHIVE_PATH.with_suffix("")),
@@ -197,6 +207,45 @@ def preserve_runtime_data():
     for log_path in DIST_DIR.glob("bot.log*"):
         if log_path.is_file():
             shutil.copy2(log_path, STAGE_DIR / log_path.name)
+
+
+def merge_runtime_additions():
+    """Add new bundled tasks and templates without resetting user settings."""
+    stage_config_path = STAGE_DIR / "config.json"
+    if not stage_config_path.exists() or not CONFIG_PATH.exists():
+        return
+
+    stage_config = json.loads(stage_config_path.read_text(encoding="utf-8"))
+    bundled_config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+
+    existing_image_uids = {
+        str(image.get("uid") or "")
+        for image in stage_config.get("images", [])
+    }
+    for image in bundled_config.get("images", []):
+        uid = str(image.get("uid") or "")
+        if uid and uid not in existing_image_uids:
+            stage_config.setdefault("images", []).append(image)
+            existing_image_uids.add(uid)
+
+    existing_task_ids = {
+        str(task.get("id") or "")
+        for task in stage_config.get("routine_tasks", [])
+    }
+    for task in bundled_config.get("routine_tasks", []):
+        task_id = str(task.get("id") or "")
+        if task_id and task_id not in existing_task_ids:
+            stage_config.setdefault("routine_tasks", []).append(task)
+            existing_task_ids.add(task_id)
+
+    stage_groups = stage_config.setdefault("groups", {})
+    for group_name, enabled in bundled_config.get("groups", {}).items():
+        stage_groups.setdefault(group_name, enabled)
+
+    stage_config_path.write_text(
+        json.dumps(stage_config, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def remove_temporary_build_files():

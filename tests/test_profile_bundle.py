@@ -123,6 +123,9 @@ class ProfileBundleTests(unittest.TestCase):
         claim_main_uid = str(uuid.uuid5(namespace, "completed_tasks:claim_main"))
         hospital_uid = str(uuid.uuid5(namespace, "heal:open_wounded"))
         collect_healed_uid = str(uuid.uuid5(namespace, "heal:collect_finished"))
+        collect_healed_alt_uid = str(
+            uuid.uuid5(namespace, "heal:collect_finished_alt_1")
+        )
         zombie_search_uid = str(uuid.uuid5(namespace, "zombie_hunt:search"))
         zombie_attack_uid = str(uuid.uuid5(namespace, "zombie_hunt:attack"))
         radar_attack_uid = str(uuid.uuid5(namespace, "radar_marches:attack_zombie"))
@@ -151,8 +154,39 @@ class ProfileBundleTests(unittest.TestCase):
         )
         self.assertTrue(images[hospital_uid]["grayscale"])
         self.assertLessEqual(images[hospital_uid]["confidence"], 0.74)
-        self.assertLessEqual(images[collect_healed_uid]["confidence"], 0.76)
+        self.assertLessEqual(images[collect_healed_uid]["confidence"], 0.70)
+        self.assertEqual(
+            images[collect_healed_uid]["action"],
+            "collect_healed_troops",
+        )
+        self.assertTrue(images[collect_healed_uid]["grayscale"])
+        self.assertEqual(
+            images[collect_healed_uid]["search_region"],
+            [120, 70, 1040, 550],
+        )
         self.assertEqual(images[collect_healed_uid]["routine_priority"], 1)
+        self.assertEqual(
+            images[collect_healed_alt_uid]["action"],
+            "click",
+        )
+        self.assertEqual(
+            images[collect_healed_alt_uid]["description"],
+            "Открыть панель лечения",
+        )
+        self.assertLessEqual(images[collect_healed_alt_uid]["confidence"], 0.78)
+        self.assertTrue(images[collect_healed_alt_uid]["grayscale"])
+        self.assertEqual(
+            images[collect_healed_alt_uid]["search_region"],
+            [1150, 430, 130, 190],
+        )
+        self.assertEqual(
+            images[collect_healed_alt_uid]["runtime_step"],
+            "healing_overview",
+        )
+        self.assertNotIn(
+            "required_setting_key",
+            images[collect_healed_alt_uid],
+        )
         self.assertTrue(images[zombie_search_uid]["allow_repeat"])
         self.assertEqual(images[zombie_search_uid]["block_seconds"], 2.0)
         self.assertEqual(images[zombie_attack_uid]["action"], "zombie_attack")

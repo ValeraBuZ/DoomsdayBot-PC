@@ -37,6 +37,7 @@ from buzzbot.routines import (
     routine_march_context_key,
     runtime_step_is_ready,
     task_setting_specs,
+    training_queue_match_is_safe,
     upgrade_prize_hunt_metadata,
     upgrade_radar_runtime_metadata,
     upgrade_repeatable_claim_metadata,
@@ -243,6 +244,36 @@ class RoutineTaskTests(unittest.TestCase):
 
         self.assertEqual(tasks[index]["id"], "metal")
 
+    def test_retried_training_does_not_starve_never_run_resources(self):
+        tasks = default_routine_tasks()
+        selected = {
+            "train_infantry",
+            "train_riders",
+            "train_shooters",
+            "train_vehicles",
+            "food",
+            "wood",
+        }
+        for task in tasks:
+            task["enabled"] = task["id"] in selected
+        next_run = {
+            "train_infantry": 195.0,
+            "train_riders": 196.0,
+            "train_shooters": 197.0,
+            "train_vehicles": 198.0,
+            "food": 0.0,
+            "wood": 0.0,
+        }
+
+        index = pick_due_task_index(tasks, next_run, 0, now=200.0)
+
+        self.assertEqual(tasks[index]["id"], "food")
+
+    def test_training_queue_match_is_limited_to_left_hud_slot(self):
+        self.assertTrue(training_queue_match_is_safe((12, 294, 75, 56), 1280, 720))
+        self.assertFalse(training_queue_match_is_safe((500, 294, 75, 56), 1280, 720))
+        self.assertFalse(training_queue_match_is_safe((12, 80, 75, 56), 1280, 720))
+
     def test_only_checked_task_is_scheduled(self):
         tasks = default_routine_tasks()
         for task in tasks:
@@ -425,6 +456,10 @@ class RoutineTaskTests(unittest.TestCase):
 
     def test_no_action_retry_is_bounded(self):
         self.assertEqual(no_action_retry_delay({"interval_minutes": 0.1}), 30.0)
+        self.assertEqual(
+            no_action_retry_delay({"id": "heal", "interval_minutes": 0.1}),
+            6.0,
+        )
         self.assertEqual(no_action_retry_delay({"interval_minutes": 2.0}), 120.0)
         self.assertEqual(no_action_retry_delay({"interval_minutes": 60.0}), 300.0)
 
@@ -732,10 +767,12 @@ class RoutineTaskTests(unittest.TestCase):
         self.assertTrue(by_uid[training_uids["queue"]]["dynamic_building_search"])
         self.assertEqual(by_uid[training_uids["queue"]]["limit_key"], "max_queue_checks")
         self.assertTrue(by_uid[training_uids["queue"]]["defer_when_limit_reached"])
-        self.assertLessEqual(by_uid[training_uids["queue"]]["confidence"], 0.80)
+        self.assertLessEqual(by_uid[training_uids["queue"]]["confidence"], 0.64)
+        self.assertTrue(by_uid[training_uids["queue"]]["training_queue_region"])
         self.assertEqual(by_uid[training_uids["queue"]]["training_queue_ordinal"], 1)
         self.assertEqual(by_uid[training_uids["queue"]]["training_radial_target"], [758, 487])
         self.assertTrue(tasks[0]["empty_home_is_success"])
+        self.assertEqual(tasks[0]["interval_minutes"], 0.1)
         self.assertEqual(tasks[1]["settings"]["max_queue_checks"], 5)
         self.assertEqual(
             by_uid[training_uids["train"]]["requires_runtime_steps"],
@@ -750,11 +787,47 @@ class RoutineTaskTests(unittest.TestCase):
             by_uid[hunt_uids["zombie_icon"]]["requires_runtime_steps"],
             ["world_search"],
         )
-        self.assertEqual(tasks[0]["timeout_seconds"], 20.0)
+        self.assertEqual(tasks[0]["timeout_seconds"], 8.0)
         self.assertEqual(tasks[1]["timeout_seconds"], 20.0)
         self.assertTrue(by_uid[hunt_uids["march"]]["confirm_disappears"])
         self.assertTrue(by_uid[hunt_uids["search"]]["allow_repeat"])
         self.assertEqual(by_uid[hunt_uids["search"]]["block_seconds"], 2.0)
+
+    def test_finished_healing_marker_uses_verified_collection_action(self):
+        import uuid
+
+        collect_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "heal:collect_finished"))
+        collect_alt_uid = str(
+            uuid.uuid5(PROFILE_NAMESPACE, "heal:collect_finished_alt_1")
+        )
+        open_wounded_uid = str(
+            uuid.uuid5(PROFILE_NAMESPACE, "heal:open_wounded")
+        )
+        images = [
+            {"uid": collect_uid, "confidence": 0.88, "grayscale": False},
+            {"uid": collect_alt_uid, "confidence": 0.88, "grayscale": False},
+            {"uid": open_wounded_uid},
+        ]
+        tasks = [{"id": "heal", "timeout_seconds": 20.0}]
+
+        self.assertEqual(upgrade_strict_runtime_metadata(images, tasks), 3)
+        self.assertEqual(images[0]["action"], "collect_healed_troops")
+        self.assertTrue(images[0]["observer_only"])
+        self.assertEqual(images[0]["confidence"], 0.70)
+        self.assertTrue(images[0]["grayscale"])
+        self.assertEqual(images[0]["search_region"], [120, 70, 1040, 550])
+        self.assertEqual(images[1]["action"], "click")
+        self.assertEqual(images[1]["description"], "Открыть панель лечения")
+        self.assertEqual(images[1]["confidence"], 0.78)
+        self.assertTrue(images[1]["grayscale"])
+        self.assertEqual(images[1]["search_region"], [1150, 430, 130, 190])
+        self.assertEqual(images[1]["runtime_step"], "healing_overview")
+        self.assertNotIn("required_setting_key", images[1])
+        self.assertEqual(images[2]["action"], "open_healing_hospital")
+        self.assertTrue(images[2]["allow_repeat"])
+        self.assertEqual(images[2]["block_seconds"], 0.5)
+        self.assertEqual(tasks[0]["interval_minutes"], 0.1)
+        self.assertEqual(tasks[0]["timeout_seconds"], 8.0)
 
     def test_research_queue_allows_lab_selection_before_deferred(self):
         research_queue_uid = str(uuid.uuid5(PROFILE_NAMESPACE, "research:queue"))

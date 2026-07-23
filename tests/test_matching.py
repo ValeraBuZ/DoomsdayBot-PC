@@ -10,6 +10,7 @@ from buzzbot.matching import (
     detect_alliance_marked_project_target,
     detect_blank_webview_close_target,
     detect_collective_tutorial_continue_target,
+    detect_login_saved_account_continue_target,
     detect_login_session_expired_ok_target,
     detect_prize_hunt_squad_confirmation_target,
     detect_radar_card_action_target,
@@ -55,6 +56,20 @@ class DynamicGameControlTests(unittest.TestCase):
         no_dialog = np.full((720, 1280, 3), (55, 70, 90), dtype=np.uint8)
         cv2.circle(no_dialog, (550, 550), 45, (35, 185, 245), thickness=-1)
         self.assertIsNone(detect_login_session_expired_ok_target(no_dialog))
+
+    def test_detects_saved_igg_account_continue_button(self):
+        frame = np.full((720, 1280, 3), 245, dtype=np.uint8)
+        frame[90:274, 238:1043] = (70, 70, 70)
+        frame[294:360, 238:1043] = (45, 205, 255)
+        frame[379:445, 238:1043] = (215, 215, 215)
+
+        self.assertEqual(
+            detect_login_saved_account_continue_target(frame),
+            (640, 326),
+        )
+
+        frame[294:360, 238:1043] = (215, 215, 215)
+        self.assertIsNone(detect_login_saved_account_continue_target(frame))
 
     def test_detects_blank_login_webview_close_button_only(self):
         blank_webview = np.full((720, 1280, 3), 255, dtype=np.uint8)

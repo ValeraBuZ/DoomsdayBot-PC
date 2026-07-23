@@ -9,11 +9,21 @@ from buzzbot.report_cloud import (
     load_report_cloud_settings,
     report_inbox,
     save_report_cloud_settings,
+    sync_folder_provider,
     upload_report_to_sync_folder,
 )
 
 
 class ReportCloudTests(unittest.TestCase):
+    def test_recognizes_cloud_root_and_its_subfolders(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "Google Drive" / "My Drive"
+            child = root / "Reports"
+            child.mkdir(parents=True)
+
+            self.assertEqual(sync_folder_provider(child, [root]), "Google Drive")
+            self.assertIsNone(sync_folder_provider(Path(temp_dir), [root]))
+
     def test_settings_round_trip(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "settings.json"

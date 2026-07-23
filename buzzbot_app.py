@@ -20,9 +20,13 @@ from datetime import datetime
 from buzzbot.accounts import (
     apply_tasks as apply_account_tasks,
     default_account_profiles,
+    extract_android_google_accounts,
+    extract_google_account_targets,
     extract_google_accounts,
+    extract_igg_login_form,
     find_account,
     mask_google_account,
+    requires_manual_google_verification,
     requires_google_reauthentication,
     next_enabled_account,
     normalize_account_profiles,
@@ -50,6 +54,7 @@ from buzzbot.matching import (
     detect_alliance_marked_project_target,
     detect_blank_webview_close_target,
     detect_collective_tutorial_continue_target,
+    detect_login_saved_account_continue_target,
     detect_login_session_expired_ok_target,
     detect_prize_hunt_squad_confirmation_target,
     detect_radar_card_action_target,
@@ -87,6 +92,7 @@ from buzzbot.routines import (
     reconcile_march_deadlines,
     resource_search_retry_due,
     setting_requirement_matches,
+    training_queue_match_is_safe,
     routine_home_recovery_due,
     routine_idle_screen_recovery_due,
     routine_missing_followup_is_unavailable,
@@ -112,6 +118,7 @@ from buzzbot.report_cloud import (
     ReportCloudSettings,
     load_report_cloud_settings,
     save_report_cloud_settings,
+    sync_folder_provider,
     upload_report_to_sync_folder,
 )
 from buzzbot.state import BotState, compute_runtime_seconds
@@ -133,7 +140,7 @@ GAME_LOGIN_MINIMUM_SECONDS = 50.0
 GAME_LOGIN_STABLE_SECONDS = 12.0
 GAME_LOGIN_RESTART_SECONDS = 150.0
 GAME_LOGIN_MAX_RESTARTS = 2
-GAME_LOGIN_WEBVIEW_GRACE_SECONDS = 15.0
+GAME_LOGIN_WEBVIEW_GRACE_SECONDS = 60.0
 WORLD_SEARCH_TASK_IDS = {"food", "wood", "metal", "oil", "zombie_hunt", "collective_mind"}
 MARCH_OBSERVER_GRACE_SECONDS = 15.0
 
@@ -695,6 +702,10 @@ class AutoClicker:
         self.routine_radar_confirmed_marker_keys = set()
         self.routine_radar_in_progress_seen = False
         self.routine_collective_tutorial_taps = 0
+        self.routine_healing_pan_route = []
+        self.routine_healing_replay_index = 0
+        self.routine_healing_scan_index = 0
+        self.routine_healing_overlay_recovery_done = False
         self.routine_only_task_id = None
 
         # Profiles let one LDPlayer instance rotate through saved in-game accounts.
@@ -1050,8 +1061,18 @@ class AutoClicker:
         if enabled:
             if not folder:
                 raise ValueError("Выберите папку Yandex Disk, Google Drive или OneDrive.")
-            if not Path(folder).expanduser().is_dir():
+            folder_path = Path(folder).expanduser()
+            if not folder_path.is_dir():
                 raise FileNotFoundError(f"Облачная папка недоступна: {folder}")
+            try:
+                folder_path.resolve().relative_to(APP_DIR.resolve())
+            except (OSError, ValueError):
+                pass
+            else:
+                raise ValueError(
+                    "Выбрана локальная папка BuZzbot. Выберите папку внутри "
+                    "Yandex Disk, Google Drive или OneDrive."
+                )
         self.report_cloud_settings = save_report_cloud_settings(
             ReportCloudSettings(
                 enabled=bool(enabled),
@@ -1065,6 +1086,7 @@ class AutoClicker:
         report_path = self.create_diagnostic_report()
         if not self.report_cloud_settings.configured:
             return report_path, False
+        provider = sync_folder_provider(self.report_cloud_settings.sync_folder)
         try:
             uploaded_path = upload_report_to_sync_folder(
                 report_path,
@@ -1077,8 +1099,25 @@ class AutoClicker:
                 force=True,
             )
             raise
-        logger.info("Диагностический отчёт помещён в облачную очередь: %s", uploaded_path)
-        self.set_status_message(f"Отчёт отправлен в облако: {uploaded_path.name}", force=True)
+        if provider:
+            logger.info(
+                "Диагностический отчёт помещён в папку синхронизации %s: %s",
+                provider,
+                uploaded_path,
+            )
+            self.set_status_message(
+                f"Отчёт передан в {provider}: {uploaded_path.name}",
+                force=True,
+            )
+        else:
+            logger.warning(
+                "Папка отчётов не распознана как облачная; ZIP скопирован локально: %s",
+                uploaded_path,
+            )
+            self.set_status_message(
+                f"Отчёт скопирован в указанную папку: {uploaded_path.name}",
+                force=True,
+            )
         return uploaded_path, True
 
     def _set_state(self, new_state):
@@ -1261,6 +1300,10 @@ class AutoClicker:
         if preferred:
             self._adopt_adb_serial(preferred.adb_serial, preferred.index)
             return True
+        # A configured profile must never jump to another running emulator just
+        # because it is currently the only ADB device that answered.
+        if target or preferred_index >= 0:
+            return False
         if len(devices) == 1:
             serial = devices[0]
             self._adopt_adb_serial(serial, index_from_serial(serial))
@@ -1854,6 +1897,14 @@ class AutoClicker:
         return dist <= color_threshold
 
     def _validate_detected_match(self, img_config, bbox):
+        if img_config.get("training_queue_region"):
+            display = (
+                self.get_display_profile()
+                if self.uses_adb
+                else make_display_profile(1280, 720)
+            )
+            if not training_queue_match_is_safe(bbox, display.width, display.height):
+                return False, "REGION"
         if self.orb_enabled and img_config.get("use_orb", True):
             orb_threshold = int(img_config.get("orb_match_threshold", self.orb_match_threshold))
             if not self._check_orb_match(img_config["path"], bbox, orb_threshold):
@@ -2670,9 +2721,17 @@ class AutoClicker:
     def get_current_account(self):
         return find_account(self.account_profiles, self.current_account_id)
 
+    def _account_password_key(self, account_id, login_method=None):
+        method = str(login_method or "").strip().lower()
+        if not method:
+            profile = find_account(self.account_profiles, account_id)
+            method = str((profile or {}).get("login_method") or "igg").strip().lower()
+        # Google passwords from older versions were stored under the bare ID.
+        return str(account_id) if method == "google" else f"igg:{account_id}"
+
     def account_has_saved_password(self, account_id):
         try:
-            return self.credential_store.has_password(account_id)
+            return self.credential_store.has_password(self._account_password_key(account_id))
         except CredentialError as exc:
             logger.warning("Не удалось проверить пароль профиля %s: %s", account_id, exc)
             return False
@@ -2683,17 +2742,25 @@ class AutoClicker:
             raise ValueError("Профиль аккаунта не найден.")
         normalized_login = str(login or "").strip()
         if not normalized_login:
-            raise ValueError("Введите логин Google.")
-        profile["google_login"] = normalized_login
+            raise ValueError("Введите логин IGG.")
+        login_method = str(profile.get("login_method") or "igg").strip().lower()
+        login_field = "google_login" if login_method == "google" else "igg_login"
+        profile[login_field] = normalized_login
         profile["auto_login"] = bool(auto_login)
         if password is not None and str(password):
-            self.credential_store.set_password(account_id, str(password))
+            self.credential_store.set_password(
+                self._account_password_key(account_id, login_method),
+                str(password),
+            )
         self.save_config()
         return True
 
     def delete_account_password(self, account_id):
-        removed = self.credential_store.delete_password(account_id)
         profile = find_account(self.account_profiles, account_id)
+        login_method = str((profile or {}).get("login_method") or "igg")
+        removed = self.credential_store.delete_password(
+            self._account_password_key(account_id, login_method)
+        )
         if profile:
             profile["auto_login"] = False
             self.save_config()
@@ -2744,7 +2811,9 @@ class AutoClicker:
                 raise CredentialError("Страница входа Google не подтверждена.")
             value = str(profile.get("google_login") or "").strip()
             if stage == "password":
-                value = self.credential_store.get_password(account_id) or ""
+                value = self.credential_store.get_password(
+                    self._account_password_key(account_id, "google")
+                ) or ""
             if not value:
                 label = "Пароль" if stage == "password" else "Логин"
                 raise CredentialError(f"{label} не сохранён в профиле.")
@@ -2768,6 +2837,47 @@ class AutoClicker:
             logger.warning("Безопасный ввод Google не выполнен: %s", exc)
             self.set_status_message(str(exc), force=True)
             return False
+
+    def fill_igg_credentials(self, account_id, form=None):
+        profile = find_account(self.account_profiles, account_id)
+        if not profile:
+            raise CredentialError("Профиль аккаунта не найден.")
+        if not self.uses_adb or self.adb_client is None or not self.adb_client.is_responsive():
+            raise CredentialError("Для входа IGG требуется подключённый ADB.")
+        if self.adb_client.current_foreground_package() != GAME_PACKAGE:
+            raise CredentialError("Форма входа IGG не открыта в игре.")
+
+        ui_xml = self.adb_client.ui_xml()
+        targets = form or extract_igg_login_form(ui_xml)
+        if not targets:
+            raise CredentialError("Форма входа IGG не подтверждена.")
+        login = str(profile.get("igg_login") or "").strip()
+        password = self.credential_store.get_password(
+            self._account_password_key(account_id, "igg")
+        ) or ""
+        if not login:
+            raise CredentialError("Логин IGG не сохранён в профиле.")
+        if not password:
+            raise CredentialError("Пароль IGG не сохранён в профиле.")
+
+        self.adb_client.tap(*targets["login"])
+        time.sleep(0.2)
+        self.adb_client.clear_focused_text(256)
+        self.adb_client.input_private_text(login)
+        time.sleep(0.25)
+        self.adb_client.tap(*targets["password"])
+        time.sleep(0.2)
+        self.adb_client.clear_focused_text(256)
+        self.adb_client.input_private_text(password)
+        time.sleep(0.25)
+
+        refreshed_targets = extract_igg_login_form(self.adb_client.ui_xml())
+        if not refreshed_targets:
+            raise CredentialError("Кнопка входа IGG исчезла после заполнения формы.")
+        self.adb_client.tap(*refreshed_targets["submit"])
+        self._invalidate_capture()
+        self.set_status_message("Данные IGG введены; проверяю главный экран", force=True)
+        return True
 
     def select_account_profile(self, account_id, save=True):
         profile = find_account(self.account_profiles, account_id)
@@ -2813,8 +2923,10 @@ class AutoClicker:
             "ldplayer_index": int(ldplayer_index),
             "adb_serial": str(adb_serial or self.adb_serial),
             "session_minutes": max(1.0, float(session_minutes)),
+            "login_method": "igg",
             "chooser_index": min(20, max(1, int(chooser_index))),
             "google_login": "",
+            "igg_login": "",
             "auto_login": False,
             "switch_group": f"Аккаунт: {str(name).strip() or account_id}",
             "switch_completion_uid": "",
@@ -2831,7 +2943,8 @@ class AutoClicker:
         if len(self.account_profiles) <= 1:
             return False
         try:
-            self.credential_store.delete_password(account_id)
+            self.credential_store.delete_password(self._account_password_key(account_id, "igg"))
+            self.credential_store.delete_password(self._account_password_key(account_id, "google"))
         except CredentialError as exc:
             logger.warning("Не удалось удалить пароль профиля %s: %s", account_id, exc)
         self.account_profiles = [profile for profile in self.account_profiles if profile.get("id") != account_id]
@@ -2854,6 +2967,25 @@ class AutoClicker:
         # remain stable across accounts.
         for image in templates:
             image["use_orb"] = False
+            description = str(image.get("description") or "").casefold()
+            action = str(image.get("action") or "")
+            if "google" in description or action == "google_account_select":
+                image["required_setting_key"] = "login_method"
+                image["required_setting_value"] = "google"
+            elif "igg" in description:
+                image["required_setting_key"] = "login_method"
+                image["required_setting_value"] = "igg"
+        login_method = str(profile.get("login_method") or "igg").strip().lower()
+        if login_method == "igg":
+            if not profile.get("auto_login", False):
+                self.set_status_message("Для переключения включите автоматический вход IGG", force=True)
+                return False
+            if not str(profile.get("igg_login") or "").strip():
+                self.set_status_message("Для переключения сохраните логин IGG", force=True)
+                return False
+            if not self.account_has_saved_password(profile["id"]):
+                self.set_status_message("Для переключения сохраните пароль IGG", force=True)
+                return False
         self.account_switch_task = {
             "id": "__account_switch__",
             "name": f"Переключение: {profile.get('name')}",
@@ -2863,11 +2995,12 @@ class AutoClicker:
             "uses_march": False,
             "priority": 1,
             "interval_minutes": 1.0,
-            "timeout_seconds": 120.0,
+            "timeout_seconds": 180.0,
             "march_duration_minutes": 1.0,
             "completion_uid": str(profile.get("switch_completion_uid") or ""),
             "settings": {
                 "target_account_id": profile["id"],
+                "login_method": login_method,
                 "chooser_index": int(profile.get("chooser_index", 1)),
                 "auto_login": bool(profile.get("auto_login", False)),
             },
@@ -2890,6 +3023,30 @@ class AutoClicker:
         return self.start()
 
     def start_account_probe(self, account_id=None):
+        if self.uses_adb and self.adb_client is not None:
+            try:
+                account_dump = self.adb_client._run(
+                    ["shell", "dumpsys", "account"],
+                    timeout=30,
+                )
+                accounts = extract_android_google_accounts(account_dump)
+            except (AdbError, OSError):
+                accounts = []
+            if accounts:
+                self.account_switch_candidates = [
+                    {"chooser_index": index, "email": email}
+                    for index, email in enumerate(accounts, start=1)
+                ]
+                self.account_switch_last_result = f"Найдено аккаунтов Google: {len(accounts)}"
+                labels = ", ".join(
+                    f"№{item['chooser_index']} {mask_google_account(item['email'])}"
+                    for item in self.account_switch_candidates
+                )
+                self.set_status_message(
+                    f"{self.account_switch_last_result} ({labels})",
+                    force=True,
+                )
+                return True
         profile = find_account(
             self.account_profiles,
             account_id or self.current_account_id,
@@ -3187,6 +3344,10 @@ class AutoClicker:
         self.routine_radar_confirmed_marker_keys = set()
         self.routine_radar_in_progress_seen = False
         self.routine_collective_tutorial_taps = 0
+        self.routine_healing_pan_route = []
+        self.routine_healing_replay_index = 0
+        self.routine_healing_scan_index = 0
+        self.routine_healing_overlay_recovery_done = False
         self._clear_routine_coordinate_blocks(task)
         template_count = len(self.get_routine_templates(task, active_only=True))
         self.set_status_message(
@@ -3721,6 +3882,15 @@ class AutoClicker:
             logger.info("Game login fallback dismissed the expired session dialog")
             return True
 
+        saved_account_target = detect_login_saved_account_continue_target(frame)
+        if saved_account_target is not None and self._tap_routine_fallback(
+            saved_account_target,
+            ("login_saved_account_continue", *saved_account_target),
+            "Вход в игру: подтверждаю сохранённый IGG Account",
+        ):
+            logger.info("Game login fallback confirmed the saved IGG account")
+            return True
+
         login_templates = (
             (
                 "93b0417c-c8ce-5636-8f2d-8716f6c52bad",
@@ -3828,12 +3998,76 @@ class AutoClicker:
         self._interruptible_sleep(1.0)
         return True
 
+    def _try_account_switch_google_chooser(self, task):
+        if (
+            task.get("id") != "__account_switch__"
+            or self.account_switch_selected_at
+            or not self.uses_adb
+            or task.get("settings", {}).get("login_method") != "google"
+        ):
+            return False
+        try:
+            if self.adb_client.current_foreground_package() != "com.google.android.gms":
+                return False
+            targets = extract_google_account_targets(self.adb_client.ui_xml())
+        except AdbError:
+            return False
+        if not targets:
+            return False
+
+        candidates = [
+            {"chooser_index": item["chooser_index"], "email": item["email"]}
+            for item in targets
+        ]
+        self.account_switch_candidates = candidates
+        settings = task.get("settings", {})
+        if settings.get("probe_only", False):
+            self.account_switch_probe_ready = True
+            labels = ", ".join(
+                f"№{item['chooser_index']} {mask_google_account(item['email'])}"
+                for item in candidates
+            )
+            self.account_switch_last_result = f"Найдено аккаунтов Google: {len(candidates)}"
+            message = self.account_switch_last_result
+            if labels:
+                message = f"{message} ({labels})"
+            self.set_status_message(message, force=True)
+            logger.info("Google account XML probe: %s", message)
+            return True
+
+        chooser_index = min(20, max(1, int(settings.get("chooser_index", 1))))
+        if chooser_index > len(targets):
+            self.account_switch_error = (
+                f"Аккаунт Google №{chooser_index} не найден; доступно: {len(targets)}"
+            )
+            self.set_status_message(self.account_switch_error, force=True)
+            return True
+
+        target = targets[chooser_index - 1]
+        self.adb_client.tap(*target["center"])
+        self._invalidate_capture()
+        self.account_switch_selected_at = time.time()
+        self.routine_last_action_time = time.time()
+        self.click_count += 1
+        self.set_status_message(
+            f"Выбран аккаунт Google №{chooser_index}: {mask_google_account(target['email'])}",
+            force=True,
+        )
+        logger.info(
+            "Google account XML row %s selected at %s",
+            chooser_index,
+            target["center"],
+        )
+        self._interruptible_sleep(8.0)
+        return True
+
     def _try_account_switch_saved_password(self, task):
         if (
             task.get("id") != "__account_switch__"
             or not self.account_switch_selected_at
             or self.account_switch_auto_login_attempted
             or not self.uses_adb
+            or task.get("settings", {}).get("login_method") != "google"
         ):
             return False
         try:
@@ -3842,6 +4076,21 @@ class AutoClicker:
             return False
         if package not in {"com.google.android.gms", "com.google.android.gsf.login"}:
             return False
+
+        try:
+            ui_xml = self.adb_client.ui_xml()
+            if not requires_google_reauthentication(ui_xml):
+                return False
+        except AdbError:
+            return False
+
+        if requires_manual_google_verification(ui_xml):
+            self.account_switch_auto_login_attempted = True
+            self.account_switch_error = (
+                "Google требует разовую ручную проверку reCAPTCHA в LDPlayer"
+            )
+            self.set_status_message(self.account_switch_error, force=True)
+            return True
 
         self.account_switch_auto_login_attempted = True
         account_id = str(task.get("settings", {}).get("target_account_id") or "")
@@ -3859,6 +4108,47 @@ class AutoClicker:
         self.account_switch_selected_at = time.time()
         self.routine_last_action_time = time.time()
         self.set_status_message("Пароль Google введён; проверяю главный экран", force=True)
+        return True
+
+    def _try_account_switch_igg_login(self, task):
+        settings = task.get("settings", {})
+        if (
+            task.get("id") != "__account_switch__"
+            or settings.get("login_method") != "igg"
+            or self.account_switch_selected_at
+            or self.account_switch_auto_login_attempted
+            or not self.uses_adb
+        ):
+            return False
+        try:
+            if self.adb_client.current_foreground_package() != GAME_PACKAGE:
+                return False
+            form = extract_igg_login_form(self.adb_client.ui_xml())
+        except AdbError:
+            return False
+        if not form:
+            return False
+
+        self.account_switch_auto_login_attempted = True
+        account_id = str(settings.get("target_account_id") or "")
+        profile = find_account(self.account_profiles, account_id)
+        if not profile or not profile.get("auto_login", False):
+            self.account_switch_error = "Автоматический вход IGG отключён для профиля"
+            self.set_status_message(self.account_switch_error, force=True)
+            return True
+        try:
+            self.fill_igg_credentials(account_id, form=form)
+        except (AdbError, CredentialError, OSError, ValueError) as exc:
+            logger.warning("Безопасный ввод IGG не выполнен: %s", exc)
+            self.account_switch_error = str(exc)
+            self.set_status_message(self.account_switch_error, force=True)
+            return True
+
+        self.account_switch_selected_at = time.time()
+        self.routine_last_action_time = time.time()
+        self.click_count += 1
+        logger.info("IGG credentials submitted for account profile %s", account_id)
+        self._interruptible_sleep(4.0)
         return True
 
     def _tap_routine_fallback(self, target, coord_key, status_message):
@@ -3910,6 +4200,161 @@ class AutoClicker:
             return False
         self.routine_completed_steps.add("open_mail")
         logger.info("Mail fallback opened the inbox at (%s, %s)", *target)
+        return True
+
+    def _healing_camera_route_key(self):
+        serial = (
+            str(getattr(getattr(self, "adb_client", None), "serial", "") or "")
+            if self.uses_adb
+            else "desktop"
+        )
+        account_id = str(getattr(self, "current_account_id", "") or "default")
+        return f"{serial or 'adb'}:{account_id}"
+
+    def _remember_healing_camera_route(self):
+        route = list(getattr(self, "routine_healing_pan_route", ()))
+        settings = self._current_task_settings()
+        changed = not settings.get("_overview_enabled", False)
+        settings["_overview_enabled"] = True
+        if not route:
+            if changed:
+                self.save_config()
+            return
+        routes = settings.setdefault("_camera_routes", {})
+        route_key = self._healing_camera_route_key()
+        remembered = route[-16:]
+        if routes.get(route_key) != remembered:
+            routes[route_key] = remembered
+            changed = True
+        if changed:
+            self.save_config()
+        logger.info(
+            "Healing camera route remembered for %s: %s",
+            route_key,
+            remembered,
+        )
+
+    def _try_healing_visual_fallback(self, task):
+        if task.get("id") != "heal" or not self._is_main_screen_visible():
+            return False
+        try:
+            frame, _origin = self._capture_screen_bgr(force=True)
+        except Exception:
+            logger.exception("Healing fallback could not capture the main screen")
+            return False
+
+        height, width = frame.shape[:2]
+        settings = task.setdefault("settings", {})
+        if "healing_overview" not in self.routine_completed_steps:
+            if settings.get("_overview_enabled", False):
+                self.routine_completed_steps.add("healing_overview")
+                self.routine_last_action_time = time.time()
+                self.set_status_message(
+                    "Лечение: использую сохранённое положение панели госпиталей",
+                    force=True,
+                )
+                return True
+            target = (
+                int(round(width * 1240 / 1280.0)),
+                int(round(height * 530 / 720.0)),
+            )
+            if not self._tap_routine_fallback(
+                target,
+                ("healing_overview_fallback", *target),
+                "Лечение: показываю значки госпиталей",
+            ):
+                return False
+            self.routine_completed_steps.add("healing_overview")
+            settings["_overview_enabled"] = True
+            self.save_config()
+            logger.info("Healing fallback opened the overview at (%s, %s)", *target)
+            return True
+
+        route_key = self._healing_camera_route_key()
+        saved_routes = settings.get("_camera_routes", {})
+        saved_route = list(saved_routes.get(route_key, ()))
+        replay_index = self.routine_healing_replay_index
+        if replay_index < len(saved_route):
+            direction = saved_route[replay_index]
+            self.routine_healing_replay_index += 1
+            route_label = "запомненный маршрут"
+        else:
+            scan_pattern = (
+                "left", "left", "right", "right",
+                "up", "up",
+                "down", "down",
+            )
+            scan_index = self.routine_healing_scan_index
+            if (
+                scan_index >= 4
+                and not self.routine_healing_overlay_recovery_done
+            ):
+                target = (
+                    int(round(width * 1240 / 1280.0)),
+                    int(round(height * 530 / 720.0)),
+                )
+                if not self._tap_routine_fallback(
+                    target,
+                    ("healing_overview_recovery", *target),
+                    "Лечение: восстанавливаю отображение значков госпиталей",
+                ):
+                    return False
+                self.routine_healing_overlay_recovery_done = True
+                self.routine_healing_scan_index = 0
+                self.routine_healing_pan_route = []
+                settings["_overview_enabled"] = not bool(
+                    settings.get("_overview_enabled", False)
+                )
+                self.save_config()
+                logger.info("Healing overview visibility recovered")
+                return True
+            if scan_index >= len(scan_pattern):
+                return False
+            direction = scan_pattern[scan_index]
+            self.routine_healing_scan_index += 1
+            route_label = "поиск"
+
+        swipes = {
+            "left": ((980, 420), (360, 420)),
+            "right": ((360, 420), (980, 420)),
+            "up": ((640, 570), (640, 250)),
+            "down": ((640, 250), (640, 570)),
+        }
+        swipe = swipes.get(direction)
+        if swipe is None:
+            return False
+        (from_x, from_y), (to_x, to_y) = swipe
+        from_x = int(round(from_x * width / 1280.0))
+        from_y = int(round(from_y * height / 720.0))
+        to_x = int(round(to_x * width / 1280.0))
+        to_y = int(round(to_y * height / 720.0))
+        try:
+            if self.uses_adb:
+                self.adb_client.swipe(from_x, from_y, to_x, to_y, 500)
+            else:
+                pyautogui.moveTo(from_x, from_y)
+                pyautogui.dragTo(to_x, to_y, duration=0.5, button="left")
+        except Exception:
+            logger.exception("Healing camera movement failed")
+            return False
+
+        self._invalidate_capture()
+        self.routine_healing_pan_route.append(direction)
+        self.routine_current_had_action = True
+        self.routine_last_action_time = time.time()
+        self.routine_idle_confirmation_count = 0
+        self.click_count += 1
+        self.set_status_message(
+            f"Лечение: двигаю карту ({route_label}), ищу госпиталь",
+            force=True,
+        )
+        self._interruptible_sleep(1.0)
+        logger.info(
+            "Healing camera moved %s (%s, route step %s)",
+            direction,
+            route_label,
+            len(self.routine_healing_pan_route),
+        )
         return True
 
     def _try_collective_tutorial_fallback(self, task):
@@ -4817,6 +5262,22 @@ class AutoClicker:
                     self.routine_mode
                     and current_routine_task.get("id") == "__account_switch__"
                     and not action_occurred
+                    and self._try_account_switch_igg_login(current_routine_task)
+                ):
+                    continue
+
+                if (
+                    self.routine_mode
+                    and current_routine_task.get("id") == "__account_switch__"
+                    and not action_occurred
+                    and self._try_account_switch_google_chooser(current_routine_task)
+                ):
+                    continue
+
+                if (
+                    self.routine_mode
+                    and current_routine_task.get("id") == "__account_switch__"
+                    and not action_occurred
                     and self._try_account_switch_saved_password(current_routine_task)
                 ):
                     continue
@@ -4842,6 +5303,14 @@ class AutoClicker:
                     and current_routine_task.get("id") == "mail_rewards"
                     and not action_occurred
                     and self._try_mail_visual_fallback(current_routine_task)
+                ):
+                    continue
+
+                if (
+                    self.routine_mode
+                    and current_routine_task.get("id") == "heal"
+                    and not action_occurred
+                    and self._try_healing_visual_fallback(current_routine_task)
                 ):
                     continue
 
@@ -4886,6 +5355,21 @@ class AutoClicker:
                             ):
                                 self.account_switch_confirmed = True
                                 self._finish_current_routine(time.time())
+                            elif (
+                                current_routine_task.get("settings", {}).get("login_method") == "igg"
+                                and time.time() - self.account_switch_selected_at >= 15.0
+                            ):
+                                try:
+                                    igg_form_visible = bool(
+                                        extract_igg_login_form(self.adb_client.ui_xml())
+                                    )
+                                except AdbError:
+                                    igg_form_visible = False
+                                if igg_form_visible:
+                                    self.account_switch_error = (
+                                        "IGG не завершил вход: проверьте логин и пароль"
+                                    )
+                                    self._finish_current_routine(time.time())
                             elif elapsed >= timeout:
                                 self.account_switch_error = (
                                     "Переключение не завершено: главный экран игры не появился"
@@ -4893,8 +5377,11 @@ class AutoClicker:
                                 self._finish_current_routine(time.time())
                             continue
                         if elapsed >= timeout:
+                            login_method = current_routine_task.get("settings", {}).get(
+                                "login_method", "igg"
+                            )
                             self.account_switch_error = (
-                                "Переключение не выполнено: окно выбора Google не найдено"
+                                f"Переключение не выполнено: окно входа {login_method.upper()} не найдено"
                             )
                             self._finish_current_routine(time.time())
                         continue
@@ -5873,6 +6360,152 @@ class AutoClicker:
                     logger.warning("Не удалось проверить экран входа Google: %s", exc)
             return
 
+        if action == "open_healing_hospital":
+            group = img_config.get("group")
+            start_image = next(
+                (
+                    image
+                    for image in self.search_images
+                    if image.get("group") == group
+                    and image.get("enabled", True)
+                    and image.get("runtime_step") == "start_healing"
+                ),
+                None,
+            )
+
+            def tap(point):
+                if self.uses_adb:
+                    self.adb_client.tap(
+                        int(round(point.x)),
+                        int(round(point.y)),
+                    )
+                else:
+                    pyautogui.click(point.x, point.y)
+                self._invalidate_capture()
+                img_config["last_used"] = time.time()
+
+            def healing_screen_is_ready():
+                if start_image is None:
+                    return False
+                start_location, start_bbox, _score = self._locate_image(start_image)
+                if start_location is None or start_bbox is None:
+                    return False
+                is_valid, _reason = self._validate_detected_match(
+                    start_image,
+                    start_bbox,
+                )
+                return is_valid
+
+            self._remember_healing_camera_route()
+            tap(location)
+            self.set_status_message(
+                "Лечение: открываю госпиталь и проверяю завершённую партию",
+                force=True,
+            )
+            if start_image is None:
+                self._interruptible_sleep(
+                    max(0.8, float(img_config.get("delay", self.sleep_found)))
+                )
+                return True
+
+            for _check in range(4):
+                self._interruptible_sleep(0.35)
+                if healing_screen_is_ready():
+                    settings = self._current_task_settings()
+                    if settings.get("_collection_pending", False):
+                        settings["_last_collection_attempt_at"] = time.time()
+                        settings["_collection_pending"] = False
+                        self.save_config()
+                        logger.info(
+                            "Healing collection linked to the previous configured batch"
+                        )
+                    return True
+
+            # The first tap can collect a completed batch without opening the
+            # hospital. Re-find the stable overview row and tap it again.
+            retry_location, retry_bbox, _score = self._locate_image(img_config)
+            if retry_location is not None and retry_bbox is not None:
+                is_valid, _reason = self._validate_detected_match(
+                    img_config,
+                    retry_bbox,
+                )
+                if is_valid:
+                    tap(retry_location)
+                    self.set_status_message(
+                        "Вылеченные войска собраны, открываю следующую партию",
+                        force=True,
+                    )
+                    for _check in range(4):
+                        self._interruptible_sleep(0.35)
+                        if healing_screen_is_ready():
+                            settings = self._current_task_settings()
+                            settings["_last_collection_attempt_at"] = time.time()
+                            settings["_collection_pending"] = False
+                            self.save_config()
+                            logger.info(
+                                "Finished healing was collected through the hospital overview"
+                            )
+                            return True
+
+            logger.warning(
+                "Healing overview did not open the hospital after collection check"
+            )
+            return False
+
+        if action == "collect_healed_troops":
+            current_location = location
+            for attempt in range(2):
+                if attempt:
+                    current_location, current_bbox, _score = self._locate_image(img_config)
+                    if current_location is None or current_bbox is None:
+                        self.set_status_message("Вылеченные войска собраны", force=True)
+                        logger.info("Finished healing marker disappeared after collection")
+                        return True
+                    is_valid, reject_reason = self._validate_detected_match(
+                        img_config,
+                        current_bbox,
+                    )
+                    if not is_valid:
+                        logger.warning(
+                            "Finished healing marker rejected before retry by %s",
+                            reject_reason,
+                        )
+                        return False
+
+                if self.uses_adb:
+                    self.adb_client.tap(
+                        int(round(current_location.x)),
+                        int(round(current_location.y)),
+                    )
+                else:
+                    pyautogui.click(current_location.x, current_location.y)
+                self._invalidate_capture()
+                img_config["last_used"] = time.time()
+                self.set_status_message(
+                    f"Собираю вылеченные войска, попытка {attempt + 1}/2",
+                    force=True,
+                )
+
+                deadline = time.monotonic() + 2.0
+                while time.monotonic() < deadline and not self.stop_event.is_set():
+                    self._interruptible_sleep(0.35)
+                    location_after, bbox_after, _score = self._locate_image(img_config)
+                    if location_after is None or bbox_after is None:
+                        self.set_status_message("Вылеченные войска собраны", force=True)
+                        logger.info(
+                            "Finished healing marker disappeared after attempt %s",
+                            attempt + 1,
+                        )
+                        return True
+                    current_location = location_after
+
+            self.set_status_message(
+                "Вылеченные войска не собраны: значок остался на экране",
+                force=True,
+            )
+            logger.warning("Finished healing marker remained visible after two taps")
+            return False
+
         if action == "heal_troops":
             troop_count = max(1, int(self._current_task_settings().get("troop_count", 10000)))
             frame, _origin = self._capture_screen_bgr(force=True)
@@ -5917,6 +6550,11 @@ class AutoClicker:
             while time.monotonic() < deadline and not self.stop_event.is_set():
                 location_after, bbox_after, _score = self._locate_image(img_config)
                 if location_after is None or bbox_after is None:
+                    settings = self._current_task_settings()
+                    settings["_collection_pending"] = True
+                    settings["_pending_heal_count"] = troop_count
+                    settings["_last_heal_started_at"] = time.time()
+                    self.save_config()
                     self.set_status_message(f"Лечение запущено, лимит {troop_count}", force=True)
                     logger.info("Healing started with configured limit %s", troop_count)
                     return True

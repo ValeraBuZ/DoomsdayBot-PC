@@ -3,12 +3,15 @@ import unittest
 from buzzbot.accounts import (
     apply_tasks,
     default_account_profiles,
+    extract_google_account_targets,
     extract_android_google_accounts,
     extract_google_accounts,
+    extract_igg_login_form,
     mask_google_account,
     next_enabled_account,
     normalize_account_profiles,
     requires_google_reauthentication,
+    requires_manual_google_verification,
     snapshot_tasks,
 )
 from buzzbot.routines import default_routine_tasks
@@ -33,6 +36,7 @@ class AccountProfileTests(unittest.TestCase):
         self.assertEqual(profile["ldplayer_index"], 5)
         self.assertEqual(profile["adb_serial"], "emulator-5564")
         self.assertEqual(profile["chooser_index"], 2)
+        self.assertEqual(profile["login_method"], "igg")
 
     def test_profile_keeps_task_selection(self):
         tasks = default_routine_tasks()
@@ -67,10 +71,23 @@ class AccountProfileTests(unittest.TestCase):
         self.assertEqual(profiles[0]["google_login"], "person@example.com")
         self.assertTrue(profiles[0]["auto_login"])
 
+    def test_profiles_default_to_igg_login(self):
+        profiles = normalize_account_profiles([
+            {"id": "a", "name": "A", "igg_login": " a@example.com "},
+            {"id": "b", "name": "B", "login_method": "unsupported"},
+        ])
+        self.assertEqual(profiles[0]["login_method"], "igg")
+        self.assertEqual(profiles[0]["igg_login"], "a@example.com")
+        self.assertEqual(profiles[1]["login_method"], "igg")
+
     def test_google_reauthentication_is_detected(self):
         self.assertTrue(requires_google_reauthentication('<node text="Подтвердите свою личность" />'))
         self.assertTrue(requires_google_reauthentication('<node text="Verify it\'s you" />'))
         self.assertFalse(requires_google_reauthentication('<node text="Doomsday: Last Survivors" />'))
+
+    def test_recaptcha_requires_manual_verification(self):
+        self.assertTrue(requires_manual_google_verification('<node text="reCAPTCHA" />'))
+        self.assertFalse(requires_manual_google_verification('<node text="Password" />'))
 
     def test_google_accounts_are_extracted_in_chooser_order(self):
         xml = (
@@ -83,8 +100,46 @@ class AccountProfileTests(unittest.TestCase):
             {"chooser_index": 2, "email": "second@example.com"},
         ])
 
+    def test_google_account_targets_use_clickable_row_bounds(self):
+        xml = (
+            '<hierarchy><node resource-id="com.google.android.gms:id/container" '
+            'clickable="true" bounds="[312,302][967,405]">'
+            '<node resource-id="com.google.android.gms:id/account_name" '
+            'text="first@example.com" /></node></hierarchy>'
+        )
+        self.assertEqual(extract_google_account_targets(xml), [
+            {
+                "chooser_index": 1,
+                "email": "first@example.com",
+                "center": (639, 353),
+            }
+        ])
+
     def test_google_account_mask_hides_local_part(self):
         self.assertEqual(mask_google_account("person@example.com"), "p*****@example.com")
+
+    def test_igg_login_form_targets_accessible_fields_and_button(self):
+        xml = (
+            '<hierarchy><node class="android.webkit.WebView" text="IGG Account">'
+            '<node class="android.widget.EditText" password="false" bounds="[238,89][1042,155]" />'
+            '<node class="android.widget.EditText" password="true" bounds="[238,176][1042,239]" />'
+            '<node class="android.widget.Button" clickable="true" bounds="[238,260][837,326]" />'
+            '</node></hierarchy>'
+        )
+        self.assertEqual(
+            extract_igg_login_form(xml),
+            {"login": (640, 122), "password": (640, 207), "submit": (537, 293)},
+        )
+
+    def test_igg_login_form_rejects_unrelated_webview(self):
+        xml = (
+            '<hierarchy><node class="android.webkit.WebView" text="Other">'
+            '<node class="android.widget.EditText" password="false" bounds="[1,1][20,20]" />'
+            '<node class="android.widget.EditText" password="true" bounds="[1,21][20,40]" />'
+            '<node class="android.widget.Button" clickable="true" bounds="[1,41][20,60]" />'
+            '</node></hierarchy>'
+        )
+        self.assertIsNone(extract_igg_login_form(xml))
 
 
 if __name__ == "__main__":

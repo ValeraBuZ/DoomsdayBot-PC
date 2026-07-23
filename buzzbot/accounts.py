@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 
 
 _EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
+_BOUNDS_RE = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
 
 
 def _account_id(name):
@@ -24,8 +25,10 @@ def default_account_profiles(serial="emulator-5564"):
             "ldplayer_index": 5,
             "adb_serial": str(serial or "emulator-5564"),
             "session_minutes": 30.0,
+            "login_method": "igg",
             "chooser_index": 2,
             "google_login": "",
+            "igg_login": "",
             "auto_login": False,
             "switch_group": "Аккаунт: Phoenix675",
             "switch_completion_uid": "",
@@ -60,6 +63,9 @@ def normalize_account_profiles(raw_profiles, serial="emulator-5564"):
         used_ids.add(account_id)
         task_enabled = source.get("task_enabled")
         task_settings = source.get("task_settings")
+        login_method = str(source.get("login_method") or "igg").strip().lower()
+        if login_method not in {"igg", "google"}:
+            login_method = "igg"
         normalized.append(
             {
                 "id": account_id,
@@ -68,8 +74,10 @@ def normalize_account_profiles(raw_profiles, serial="emulator-5564"):
                 "ldplayer_index": int(_number(source.get("ldplayer_index"), 5, 0, 99)),
                 "adb_serial": str(source.get("adb_serial") or serial or "emulator-5564"),
                 "session_minutes": _number(source.get("session_minutes"), 30.0, 1.0, 1440.0),
+                "login_method": login_method,
                 "chooser_index": int(_number(source.get("chooser_index"), index + 1, 1, 20)),
                 "google_login": str(source.get("google_login") or "").strip(),
+                "igg_login": str(source.get("igg_login") or "").strip(),
                 "auto_login": bool(source.get("auto_login", False)),
                 "switch_group": str(source.get("switch_group") or f"Аккаунт: {name}"),
                 "switch_completion_uid": str(source.get("switch_completion_uid") or ""),
@@ -133,6 +141,11 @@ def requires_google_reauthentication(ui_xml):
     return any(marker in text for marker in markers)
 
 
+def requires_manual_google_verification(ui_xml):
+    text = str(ui_xml or "").casefold()
+    return "recaptcha" in text
+
+
 def extract_google_accounts(ui_xml):
     """Return Google accounts in the same top-to-bottom order as the chooser."""
     try:
@@ -154,6 +167,44 @@ def extract_google_accounts(ui_xml):
     return accounts
 
 
+def extract_google_account_targets(ui_xml):
+    """Return Google chooser rows with their safe clickable centers."""
+    try:
+        root = ET.fromstring(str(ui_xml or ""))
+    except ET.ParseError:
+        return []
+
+    targets = []
+    seen = set()
+    for node in root.iter():
+        resource_id = str(node.attrib.get("resource-id", ""))
+        if not resource_id.endswith("/container") or node.attrib.get("clickable") != "true":
+            continue
+        email = ""
+        for descendant in node.iter():
+            descendant_id = str(descendant.attrib.get("resource-id", ""))
+            value = str(descendant.attrib.get("text", ""))
+            if descendant_id.endswith("/account_name") and _EMAIL_RE.fullmatch(value):
+                email = value
+                break
+        normalized = email.casefold()
+        bounds = _BOUNDS_RE.fullmatch(str(node.attrib.get("bounds", "")))
+        if not email or normalized in seen or bounds is None:
+            continue
+        left, top, right, bottom = map(int, bounds.groups())
+        if right <= left or bottom <= top:
+            continue
+        seen.add(normalized)
+        targets.append(
+            {
+                "chooser_index": len(targets) + 1,
+                "email": email,
+                "center": ((left + right) // 2, (top + bottom) // 2),
+            }
+        )
+    return targets
+
+
 def extract_android_google_accounts(account_dump):
     """Return Google accounts reported by Android AccountManager."""
     accounts = []
@@ -171,6 +222,60 @@ def extract_android_google_accounts(account_dump):
     return accounts
 
 
+def extract_igg_login_form(ui_xml):
+    """Return safe input/button centers when the IGG Account form is visible."""
+    try:
+        root = ET.fromstring(str(ui_xml or ""))
+    except ET.ParseError:
+        return None
+
+    has_igg_webview = any(
+        node.attrib.get("class") == "android.webkit.WebView"
+        and "igg account" in " ".join(
+            (
+                str(node.attrib.get("text", "")),
+                str(node.attrib.get("content-desc", "")),
+            )
+        ).casefold()
+        for node in root.iter()
+    )
+    if not has_igg_webview:
+        return None
+
+    login_target = None
+    password_target = None
+    submit_targets = []
+    for node in root.iter():
+        attributes = node.attrib
+        bounds = _BOUNDS_RE.fullmatch(str(attributes.get("bounds", "")))
+        if bounds is None:
+            continue
+        left, top, right, bottom = map(int, bounds.groups())
+        if right <= left or bottom <= top:
+            continue
+        center = ((left + right) // 2, (top + bottom) // 2)
+        node_class = attributes.get("class")
+        if node_class == "android.widget.EditText":
+            if attributes.get("password") == "true":
+                password_target = password_target or center
+            else:
+                login_target = login_target or center
+        elif node_class == "android.widget.Button" and attributes.get("clickable") == "true":
+            submit_targets.append((top, center))
+
+    if login_target is None or password_target is None or not submit_targets:
+        return None
+    submit_target = next(
+        (center for top, center in sorted(submit_targets) if top >= password_target[1]),
+        sorted(submit_targets)[0][1],
+    )
+    return {
+        "login": login_target,
+        "password": password_target,
+        "submit": submit_target,
+    }
+
+
 def mask_google_account(email):
     value = str(email or "").strip()
     if "@" not in value:
@@ -178,3 +283,14 @@ def mask_google_account(email):
     local, domain = value.split("@", 1)
     visible = local[:1]
     return f"{visible}{'*' * max(3, len(local) - 1)}@{domain}"
+
+
+def mask_account_login(login):
+    value = str(login or "").strip()
+    if "@" in value:
+        return mask_google_account(value)
+    if not value:
+        return ""
+    if len(value) <= 2:
+        return "*" * len(value)
+    return f"{value[:1]}{'*' * max(3, len(value) - 2)}{value[-1:]}"

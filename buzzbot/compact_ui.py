@@ -10,7 +10,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from PIL import Image, ImageTk
 
-from buzzbot.accounts import mask_google_account
+from buzzbot.accounts import mask_account_login
 from buzzbot.routines import effective_task_group, task_setting_specs
 
 
@@ -213,12 +213,12 @@ class AccountCredentialsDialog:
     def _build(self):
         body = ttk.Frame(self.dialog, padding=16)
         body.pack(fill=tk.BOTH, expand=True)
-        ttk.Label(body, text="Безопасный вход Google", style="CompactTitle.TLabel").pack(anchor="w")
+        ttk.Label(body, text="Безопасный вход IGG", style="CompactTitle.TLabel").pack(anchor="w")
         ttk.Label(
             body,
             text=(
                 "Пароль шифруется средствами Windows и не сохраняется в config.json. "
-                "Перед вводом откройте нужное поле на странице Google."
+                "Он доступен только вашему пользователю Windows на этом компьютере."
             ),
             foreground="#72818A",
             wraplength=520,
@@ -227,8 +227,8 @@ class AccountCredentialsDialog:
         form = ttk.Frame(body)
         form.pack(fill=tk.X)
         form.columnconfigure(1, weight=1)
-        ttk.Label(form, text="Логин Google").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=5)
-        self.login_var = tk.StringVar(value=self.profile.get("google_login", ""))
+        ttk.Label(form, text="Логин IGG (эл. почта)").grid(row=0, column=0, sticky="w", padx=(0, 12), pady=5)
+        self.login_var = tk.StringVar(value=self.profile.get("igg_login", ""))
         ttk.Entry(form, textvariable=self.login_var, width=42).grid(row=0, column=1, sticky="ew", pady=5)
 
         ttk.Label(form, text="Пароль").grid(row=1, column=0, sticky="w", padx=(0, 12), pady=5)
@@ -239,7 +239,7 @@ class AccountCredentialsDialog:
         self.auto_login_var = tk.BooleanVar(value=bool(self.profile.get("auto_login", False)))
         ttk.Checkbutton(
             form,
-            text="Использовать при повторном подтверждении Google",
+            text="Автоматически входить при смене аккаунта",
             variable=self.auto_login_var,
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 2))
 
@@ -249,8 +249,6 @@ class AccountCredentialsDialog:
 
         actions = ttk.Frame(body)
         actions.pack(fill=tk.X, pady=(16, 0))
-        ttk.Button(actions, text="Ввести логин", command=lambda: self.fill("login")).pack(side=tk.LEFT)
-        ttk.Button(actions, text="Ввести пароль", command=lambda: self.fill("password")).pack(side=tk.LEFT, padx=6)
         ttk.Button(actions, text="Удалить пароль", command=self.delete_password).pack(side=tk.LEFT)
 
         buttons = ttk.Frame(body)
@@ -266,6 +264,7 @@ class AccountCredentialsDialog:
     def _save(self):
         login = self.login_var.get().strip()
         password = self.password_var.get()
+        self.profile["login_method"] = "igg"
         self.bot.save_account_credentials(
             self.profile["id"],
             login,
@@ -283,19 +282,6 @@ class AccountCredentialsDialog:
             messagebox.showerror("Учётные данные", str(exc), parent=self.dialog)
             return
         self.dialog.destroy()
-
-    def fill(self, stage):
-        try:
-            self._save()
-        except Exception as exc:
-            messagebox.showerror("Учётные данные", str(exc), parent=self.dialog)
-            return
-        if not self.bot.fill_google_credential(self.profile["id"], stage):
-            messagebox.showwarning(
-                "Учётные данные",
-                "Ввод не выполнен. Откройте нужное поле на странице Google и проверьте ADB.",
-                parent=self.dialog,
-            )
 
     def delete_password(self):
         try:
@@ -330,13 +316,7 @@ class AccountsDialog:
             text="Один LDPlayer, несколько сохранённых аккаунтов",
             style="CompactTitle.TLabel",
         ).pack(anchor="w")
-        details = self.bot.account_switch_last_result or "Проверка Google ещё не запускалась"
-        if self.bot.account_switch_candidates:
-            labels = ", ".join(
-                f"№{item['chooser_index']} {mask_google_account(item['email'])}"
-                for item in self.bot.account_switch_candidates
-            )
-            details = f"{details}: {labels}"
+        details = self.bot.account_switch_last_result or "Переключение выполняется через IGG Account"
         ttk.Label(body, text=details, foreground="#72818A", wraplength=580).pack(
             anchor="w", pady=(5, 0)
         )
@@ -350,7 +330,6 @@ class AccountsDialog:
         ttk.Button(buttons, text="Удалить", command=self.delete).pack(side=tk.LEFT, padx=6)
         ttk.Button(buttons, text="Изменить", command=self.edit).pack(side=tk.LEFT)
         ttk.Button(buttons, text="Учётные данные", command=self.credentials).pack(side=tk.LEFT, padx=6)
-        ttk.Button(buttons, text="Найти Google", command=self.probe).pack(side=tk.LEFT, padx=6)
         ttk.Button(buttons, text="Сменить в игре", style="Primary.TButton", command=self.switch_in_game).pack(side=tk.RIGHT)
         ttk.Button(buttons, text="Профиль", command=self.select).pack(side=tk.RIGHT, padx=6)
         self.dialog.bind("<Escape>", lambda _event: self.dialog.destroy())
@@ -359,12 +338,12 @@ class AccountsDialog:
         self.listbox.delete(0, tk.END)
         for profile in self.bot.account_profiles:
             mark = "●" if profile.get("id") == self.bot.current_account_id else " "
-            login = str(profile.get("google_login") or "").strip()
-            login_label = mask_google_account(login) if "@" in login else ("указан" if login else "нет")
+            login = str(profile.get("igg_login") or "").strip()
+            login_label = mask_account_login(login) or "нет"
             password_label = "да" if self.bot.account_has_saved_password(profile.get("id")) else "нет"
             self.listbox.insert(
                 tk.END,
-                f"{mark} {profile.get('name')} | Google №{profile.get('chooser_index')} | "
+                f"{mark} {profile.get('name')} | IGG | "
                 f"логин: {login_label} | пароль: {password_label} | LD {profile.get('ldplayer_index')}",
             )
         if self.bot.account_profiles:
@@ -384,22 +363,12 @@ class AccountsDialog:
         name = simpledialog.askstring("Новый аккаунт", "Название аккаунта:", parent=self.dialog)
         if not name or not name.strip():
             return
-        chooser_index = simpledialog.askinteger(
-            "Новый аккаунт",
-            "Номер строки аккаунта Google (сверху):",
-            parent=self.dialog,
-            minvalue=1,
-            maxvalue=20,
-            initialvalue=len(self.bot.account_profiles) + 1,
-        )
-        if chooser_index is None:
-            return
         current = self.bot.get_current_account() or {}
         ldplayer_index = self.bot.player_index
         if ldplayer_index is None:
             ldplayer_index = current.get("ldplayer_index", 5)
         profile = self.bot.add_account_profile(
-            name.strip(), ldplayer_index, self.bot.adb_serial, 30.0, chooser_index=chooser_index
+            name.strip(), ldplayer_index, self.bot.adb_serial, 30.0
         )
         self.bot.select_account_profile(profile["id"])
         self._reload()
@@ -429,18 +398,8 @@ class AccountsDialog:
         )
         if not name or not name.strip():
             return
-        chooser_index = simpledialog.askinteger(
-            "Изменить аккаунт",
-            "Номер строки аккаунта Google (сверху):",
-            parent=self.dialog,
-            minvalue=1,
-            maxvalue=20,
-            initialvalue=int(profile.get("chooser_index", 1)),
-        )
-        if chooser_index is None:
-            return
         profile["name"] = name.strip()
-        profile["chooser_index"] = chooser_index
+        profile["login_method"] = "igg"
         profile["switch_group"] = f"Аккаунт: {name.strip()}"
         self.bot.save_config()
         self._reload()
@@ -467,7 +426,7 @@ class AccountsDialog:
         if not self.bot.start_account_switch(profile["id"]):
             messagebox.showwarning(
                 "Аккаунты",
-                "Сначала снимите последовательность входа для этого аккаунта.",
+                "Сохраните логин и пароль IGG, включите автоматический вход и проверьте ADB.",
                 parent=self.dialog,
             )
             return
@@ -687,7 +646,8 @@ class ReportCloudDialog:
             body,
             text=(
                 "Очередь: BuZzbot Reports / Входящие / <имя ПК>. "
-                "Локальный дубль удаляется только после успешной передачи. "
+                "Локальный дубль удаляется после передачи в папку синхронизации. "
+                "Фактическую загрузку выполняет установленный облачный клиент. "
                 "После проверки ZIP можно удалить из Входящих, и облачный клиент удалит его на остальных ПК."
             ),
             foreground="#72818A",
@@ -742,8 +702,8 @@ class ReportCloudDialog:
                 parent=self.dialog,
             )
             return
-        title = "Отчёт отправлен" if uploaded else "Отчёт создан"
-        location = "Облачная очередь" if uploaded else "Локальный файл"
+        title = "Отчёт передан" if uploaded else "Отчёт создан"
+        location = "Папка синхронизации" if uploaded else "Локальный файл"
         messagebox.showinfo(title, f"{location}:\n{report_path}", parent=self.dialog)
 
 
@@ -863,6 +823,8 @@ def build_compact_ui(root, bot):
     rotation_var = tk.BooleanVar(value=bot.account_rotation_enabled)
     task_vars = {}
     task_rows = {}
+    task_redraws = {}
+    category_count_labels = {}
     status_events = deque(maxlen=5)
 
     def run_root_callback(name, fallback=None):
@@ -1411,7 +1373,7 @@ def build_compact_ui(root, bot):
             if value and task["settings"]["branch"] == "off":
                 task["settings"]["branch"] = "any"
         bot.set_routine_enabled(task["id"], value)
-        refresh_all()
+        refresh_task_state()
 
     def create_task_toggle(parent, task, variable):
         control = tk.Frame(parent, bg=colors["surface"])
@@ -1437,20 +1399,17 @@ def build_compact_ui(root, bot):
         )
         label.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
+        rectangle = box.create_rectangle(1, 1, 14, 14, width=1)
+        checkmark = box.create_line(4, 8, 7, 11, 12, 4, fill="#FFFFFF", width=2)
+
         def redraw(*_args):
             selected = bool(variable.get())
-            box.delete("all")
-            box.create_rectangle(
-                1,
-                1,
-                14,
-                14,
+            box.itemconfigure(
+                rectangle,
                 fill=colors["accent"] if selected else colors["surface"],
                 outline=colors["accent"] if selected else "#A7B5BC",
-                width=1,
             )
-            if selected:
-                box.create_line(4, 8, 7, 11, 12, 4, fill="#FFFFFF", width=2)
+            box.itemconfigure(checkmark, state="normal" if selected else "hidden")
 
         def click(_event=None):
             variable.set(not bool(variable.get()))
@@ -1461,6 +1420,7 @@ def build_compact_ui(root, bot):
         box.bind("<Button-1>", click)
         label.bind("<Button-1>", click)
         redraw()
+        task_redraws[task["id"]] = redraw
         return control
 
     def build_task_rows():
@@ -1469,6 +1429,8 @@ def build_compact_ui(root, bot):
             widget.destroy()
         task_vars.clear()
         task_rows.clear()
+        task_redraws.clear()
+        category_count_labels.clear()
         grouped = {}
         for task in bot.routine_tasks:
             grouped.setdefault(task.get("category", "custom"), []).append(task)
@@ -1504,7 +1466,7 @@ def build_compact_ui(root, bot):
                 font=("Bahnschrift", 10, "bold"),
             ).pack(side=tk.LEFT)
             active_count = sum(bool(task.get("enabled", False)) for task in tasks)
-            tk.Label(
+            active_count_label = tk.Label(
                 card_header,
                 text=f"{active_count} активно",
                 bg=colors["surface_alt"],
@@ -1512,7 +1474,9 @@ def build_compact_ui(root, bot):
                 font=("Segoe UI", 7),
                 padx=8,
                 pady=3,
-            ).pack(side=tk.RIGHT)
+            )
+            active_count_label.pack(side=tk.RIGHT)
+            category_count_labels[category] = active_count_label
 
             for index, task in enumerate(tasks):
                 if index:
@@ -1538,7 +1502,7 @@ def build_compact_ui(root, bot):
                         current_task["enabled"] = branch != "off"
                         bot.groups[effective_task_group(current_task)] = current_task["enabled"]
                         bot.save_config()
-                        refresh_all()
+                        refresh_task_state()
 
                     branch_combo = ttk.Combobox(
                         row,
@@ -1595,7 +1559,12 @@ def build_compact_ui(root, bot):
                     tk.Button(
                         row,
                         text="···",
-                        command=lambda current_task=task: TaskSettingsDialog(root, bot, current_task, refresh_all),
+                        command=lambda current_task=task: TaskSettingsDialog(
+                            root,
+                            bot,
+                            current_task,
+                            refresh_task_state,
+                        ),
                         bg=colors["surface"],
                         fg=colors["muted"],
                         activebackground=colors["surface_alt"],
@@ -1699,6 +1668,40 @@ def build_compact_ui(root, bot):
 
     account_combo.bind("<<ComboboxSelected>>", select_account)
 
+    def refresh_task_state():
+        task_ids = {task["id"] for task in bot.routine_tasks}
+        if task_ids != set(task_vars):
+            build_task_rows()
+            task_ids = set(task_vars)
+
+        category_counts = {}
+        for task in bot.routine_tasks:
+            task_id = task["id"]
+            enabled = bool(task.get("enabled", False))
+            variable = task_vars.get(task_id)
+            if variable is not None and bool(variable.get()) != enabled:
+                variable.set(enabled)
+            redraw = task_redraws.get(task_id)
+            if redraw:
+                redraw()
+
+            category = task.get("category", "custom")
+            category_counts[category] = category_counts.get(category, 0) + int(enabled)
+
+            indicator = task_rows.get(task_id)
+            if indicator is not None:
+                group = effective_task_group(task)
+                has_templates = any(
+                    image.get("group") == group for image in bot.search_images
+                )
+                indicator.configure(fg=colors["green"] if has_templates else "#C99162")
+
+        for category, label in category_count_labels.items():
+            label.configure(text=f"{category_counts.get(category, 0)} активно")
+        selected_var.set(
+            f"{sum(bool(task.get('enabled')) for task in bot.routine_tasks)} задач"
+        )
+
     def refresh_all():
         names = [profile.get("name") for profile in bot.account_profiles]
         account_combo["values"] = names
@@ -1759,7 +1762,7 @@ def build_compact_ui(root, bot):
         root.compact_after_id = root.after(500, update_state)
 
     root.bind("<<AccountChanged>>", lambda _event: refresh_all())
-    root.refresh_routine_summary = refresh_all
+    root.refresh_routine_summary = refresh_task_state
     refresh_all()
     root.after(250, check_environment)
     update_state()

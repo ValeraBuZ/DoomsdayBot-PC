@@ -166,6 +166,7 @@ ACCOUNT_SWITCH_STEPS = (
     ("account", "Открыть настройки аккаунта", "game_settings.png", (188, 284, 388, 459), (0, 0), False),
     ("switch", "Открыть смену аккаунта", "account_settings.png", (507, 594, 773, 642), (0, 0), False),
     ("google", "Выбрать вход Google", "account_switch_list.png", (774, 137, 868, 226), (0, 0), False),
+    ("igg", "Выбрать вход IGG", "account_switch_list.png", (974, 137, 1078, 226), (0, 0), False),
     ("chooser", "Выбрать строку аккаунта Google", "google_account_chooser.png", (486, 179, 797, 214), (0, 0), False),
 )
 
@@ -981,6 +982,14 @@ DAILY_TASK_STEPS = {
             False,
         ),
         (
+            "collect_finished_alt_1",
+            "Открыть панель лечения",
+            "LDPlayer0_heal_finished_alt.png",
+            (1200, 490, 1280, 570),
+            (0, 0),
+            False,
+        ),
+        (
             "open_wounded",
             "Открыть госпиталь с ранеными",
             "base_pan_north.png",
@@ -1352,6 +1361,12 @@ def build_profile(destination):
         configured_image["use_orb"] = False
         if step_id == "chooser":
             configured_image["action"] = "google_account_select"
+        if step_id in {"google", "chooser"}:
+            configured_image["required_setting_key"] = "login_method"
+            configured_image["required_setting_value"] = "google"
+        elif step_id == "igg":
+            configured_image["required_setting_key"] = "login_method"
+            configured_image["required_setting_value"] = "igg"
         manifest["images"].append(configured_image)
         payloads.append((output_path, entry_name))
         print(f"{'account_switch':15s} {step_id:15s} score={score:.3f} size={crop.shape[1]}x{crop.shape[0]}")
@@ -1655,8 +1670,27 @@ def build_profile(destination):
                         }
                     )
             if task_id == "heal" and step_id == "collect_finished":
+                configured_image["action"] = "collect_healed_troops"
+                configured_image["grayscale"] = True
+                configured_image["confidence"] = min(
+                    0.70,
+                    float(configured_image.get("confidence", 0.88) or 0.88),
+                )
+                configured_image["search_region"] = [120, 70, 1040, 550]
                 configured_image["required_setting_key"] = "collect_finished"
                 configured_image["required_setting_value"] = True
+                configured_image["allow_repeat"] = True
+                configured_image["block_seconds"] = 1.0
+            if task_id == "heal" and step_id == "collect_finished_alt_1":
+                configured_image["action"] = "click"
+                configured_image["confidence"] = min(
+                    0.78,
+                    float(configured_image.get("confidence", 0.88) or 0.88),
+                )
+                configured_image["grayscale"] = True
+                configured_image["search_region"] = [1150, 430, 130, 190]
+                configured_image["runtime_step"] = "healing_overview"
+                configured_image["allow_runtime_resume"] = True
                 configured_image["allow_repeat"] = True
                 configured_image["block_seconds"] = 1.0
             if task_id == "heal" and step_id == "start_healing":
@@ -1694,7 +1728,7 @@ def build_profile(destination):
             "Найти учебное здание через свободную очередь",
             (0, 0),
             False,
-            0.8,
+            0.64,
         )
         queue_image.update(
             {
@@ -1703,6 +1737,7 @@ def build_profile(destination):
                 "block_seconds": 0.7,
                 "repeat_runtime_step": True,
                 "skip_if_uid_visible": guard_uid,
+                "training_queue_region": True,
             }
         )
         manifest["images"].append(queue_image)
@@ -2198,6 +2233,11 @@ def install_profile(profile_path, install_root):
             "ldplayer_index": 5,
             "adb_serial": "emulator-5564",
             "session_minutes": 30.0,
+            "login_method": "igg",
+            "chooser_index": 1,
+            "google_login": "",
+            "igg_login": "",
+            "auto_login": False,
             "switch_group": "Аккаунт: Phoenix675",
             "switch_completion_uid": "",
             "task_enabled": {task["id"]: task["enabled"] for task in manifest["routine_tasks"]},

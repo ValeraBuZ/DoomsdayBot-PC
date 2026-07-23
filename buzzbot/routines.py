@@ -393,8 +393,8 @@ DEFAULT_ROUTINE_TASKS = (
         "enabled": False,
         "uses_march": False,
         "priority": 45,
-        "interval_minutes": 1.0,
-        "timeout_seconds": 12.0,
+        "interval_minutes": 0.1,
+        "timeout_seconds": 8.0,
         "march_duration_minutes": 30.0,
         "completion_uid": "",
         "empty_home_is_success": True,
@@ -753,6 +753,8 @@ def prize_hunt_branch_allows_image(image, repeat_until_stopped):
 def no_action_retry_delay(task):
     """Use a bounded retry delay when a task timed out without any action."""
     interval_seconds = float(task.get("interval_minutes", 1.0)) * 60.0
+    if task.get("id") == "heal":
+        return max(5.0, min(10.0, interval_seconds))
     return max(30.0, min(300.0, interval_seconds))
 
 
@@ -1146,10 +1148,14 @@ def upgrade_strict_runtime_metadata(images, tasks):
     if collect_finished is not None:
         collect_finished.update(
             {
+                "action": "collect_healed_troops",
+                "observer_only": True,
                 "confidence": min(
-                    0.76,
+                    0.70,
                     float(collect_finished.get("confidence", 0.88) or 0.88),
                 ),
+                "grayscale": True,
+                "search_region": [120, 70, 1040, 550],
                 "orb_match_threshold": 3,
                 "routine_priority": 1,
                 "required_setting_key": "collect_finished",
@@ -1159,6 +1165,33 @@ def upgrade_strict_runtime_metadata(images, tasks):
                 "requires_settlement_screen": True,
             }
         )
+        upgraded += 1
+
+    healing_overview = images_by_uid.get(
+        str(uuid.uuid5(PROFILE_NAMESPACE, "heal:collect_finished_alt_1"))
+    )
+    if healing_overview is not None:
+        healing_overview.update(
+            {
+                "action": "click",
+                "description": "Открыть панель лечения",
+                "confidence": min(
+                    0.78,
+                    float(healing_overview.get("confidence", 0.88) or 0.88),
+                ),
+                "grayscale": True,
+                "search_region": [1150, 430, 130, 190],
+                "orb_match_threshold": 3,
+                "routine_priority": 2,
+                "runtime_step": "healing_overview",
+                "allow_runtime_resume": True,
+                "allow_repeat": True,
+                "block_seconds": 1.0,
+                "requires_settlement_screen": True,
+            }
+        )
+        healing_overview.pop("required_setting_key", None)
+        healing_overview.pop("required_setting_value", None)
         upgraded += 1
 
     for task_id, sequence in STRICT_RUNTIME_SEQUENCES.items():
@@ -1209,12 +1242,20 @@ def upgrade_strict_runtime_metadata(images, tasks):
                 image["training_radial_target"] = list(
                     TRAINING_RADIAL_TARGETS[task_id]
                 )
-                # The active queue icon loses its sleeping marker. Its stable
-                # core still scores about 0.82 on LDPlayer at 1280x720.
+                # Counters and the sleeping marker change the icon enough to
+                # lower its score. The fixed HUD-region guard keeps 0.64 safe.
                 image["confidence"] = min(
-                    0.80,
+                    0.64,
                     float(image.get("confidence", 0.88) or 0.88),
                 )
+                image["training_queue_region"] = True
+            if task_id == "heal" and step_id == "open_wounded":
+                # Opening the stable healing overview row also collects a
+                # completed batch, so troop-specific collection icons are not
+                # required.
+                image["action"] = "open_healing_hospital"
+                image["allow_repeat"] = True
+                image["block_seconds"] = 0.5
             image.pop("requires_runtime_steps", None)
             selected_training_building = (
                 task_id.startswith("train_") and step_id == "building"
@@ -1295,7 +1336,14 @@ def upgrade_strict_runtime_metadata(images, tasks):
         upgraded += 1
 
     for task in tasks:
-        if task.get("id") in STRICT_RUNTIME_SEQUENCES:
+        if task.get("id") == "heal":
+            task["interval_minutes"] = 0.1
+            task["timeout_seconds"] = min(
+                8.0,
+                max(5.0, float(task.get("timeout_seconds", 8.0) or 8.0)),
+            )
+            task["empty_home_is_success"] = True
+        elif task.get("id") in STRICT_RUNTIME_SEQUENCES:
             task["timeout_seconds"] = max(
                 20.0,
                 float(task.get("timeout_seconds", 0.0) or 0.0),
@@ -1306,8 +1354,6 @@ def upgrade_strict_runtime_metadata(images, tasks):
             settings.pop("level_max", None)
             settings["fallback_levels"] = zombie_fallback_levels(settings)
             task["march_completion_runtime_step"] = "march"
-        if task.get("id") == "heal":
-            task["empty_home_is_success"] = True
         if str(task.get("id") or "").startswith("train_"):
             settings = task.setdefault("settings", {})
             settings["max_queue_checks"] = max(
@@ -1794,7 +1840,7 @@ def is_task_effectively_enabled(task):
 
 
 def pick_due_task_index(tasks, next_run, start_index, now, active_marches=0, max_marches=5):
-    """Pick the longest-waiting due task in the highest-priority band."""
+    """Pick the longest-waiting due task, using priority only for equal waits."""
     if not tasks:
         return None
     start_index = int(start_index or 0) % len(tasks)
@@ -1808,8 +1854,30 @@ def pick_due_task_index(tasks, next_run, start_index, now, active_marches=0, max
             continue
         deadline = float(next_run.get(task["id"], 0.0))
         if deadline <= float(now):
-            candidates.append((int(task.get("priority", 100)), deadline, offset, index))
+            # A retried high-priority task must not starve a checkbox that has
+            # never received its first attempt.
+            candidates.append((deadline, int(task.get("priority", 100)), offset, index))
     return min(candidates)[3] if candidates else None
+
+
+def training_queue_match_is_safe(bbox, display_width, display_height):
+    """Keep the low-confidence training queue match inside its fixed HUD slot."""
+    if not isinstance(bbox, (tuple, list)) or len(bbox) != 4:
+        return False
+    try:
+        left, top, width, height = map(float, bbox)
+        display_width = float(display_width)
+        display_height = float(display_height)
+    except (TypeError, ValueError):
+        return False
+    if display_width <= 0 or display_height <= 0 or width <= 0 or height <= 0:
+        return False
+    center_x = left + width / 2.0
+    center_y = top + height / 2.0
+    return (
+        center_x <= display_width * 0.13
+        and display_height * 0.34 <= center_y <= display_height * 0.55
+    )
 
 
 def next_due_task(tasks, next_run, now, active_marches=0, max_marches=5):

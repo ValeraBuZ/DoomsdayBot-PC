@@ -9,6 +9,8 @@ from pathlib import Path
 
 
 CRYPTPROTECT_UI_FORBIDDEN = 0x1
+# Keep the original entropy so credentials saved by older BuZzbot versions
+# remain readable after adding IGG Account support.
 _ENTROPY = b"BuZzbot Google credentials v1"
 
 
