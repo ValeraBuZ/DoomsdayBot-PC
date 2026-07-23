@@ -706,6 +706,8 @@ class AutoClicker:
         self.routine_healing_replay_index = 0
         self.routine_healing_scan_index = 0
         self.routine_healing_overlay_recovery_done = False
+        self.routine_healing_saved_route_rejected = False
+        self.routine_healing_search_started = False
         self.routine_only_task_id = None
 
         # Profiles let one LDPlayer instance rotate through saved in-game accounts.
@@ -3348,6 +3350,8 @@ class AutoClicker:
         self.routine_healing_replay_index = 0
         self.routine_healing_scan_index = 0
         self.routine_healing_overlay_recovery_done = False
+        self.routine_healing_saved_route_rejected = False
+        self.routine_healing_search_started = False
         self._clear_routine_coordinate_blocks(task)
         template_count = len(self.get_routine_templates(task, active_only=True))
         self.set_status_message(
@@ -4214,8 +4218,7 @@ class AutoClicker:
     def _remember_healing_camera_route(self):
         route = list(getattr(self, "routine_healing_pan_route", ()))
         settings = self._current_task_settings()
-        changed = not settings.get("_overview_enabled", False)
-        settings["_overview_enabled"] = True
+        changed = settings.pop("_overview_enabled", None) is not None
         if not route:
             if changed:
                 self.save_config()
@@ -4245,29 +4248,35 @@ class AutoClicker:
 
         height, width = frame.shape[:2]
         settings = task.setdefault("settings", {})
-        if "healing_overview" not in self.routine_completed_steps:
-            if settings.get("_overview_enabled", False):
-                self.routine_completed_steps.add("healing_overview")
-                self.routine_last_action_time = time.time()
-                self.set_status_message(
-                    "Лечение: использую сохранённое положение панели госпиталей",
-                    force=True,
+        if settings.get("_collection_pending", False):
+            last_started_at = float(
+                settings.get("_last_heal_started_at", time.time()) or time.time()
+            )
+            if time.time() - last_started_at < 12 * 3600.0:
+                logger.info(
+                    "Healing batch is still pending; waiting for the fixed "
+                    "collection marker instead of moving the camera"
+                )
+                self._defer_current_routine_unavailable(
+                    "текущее лечение ещё не завершено",
+                    time.time(),
                 )
                 return True
-            target = (
-                int(round(width * 1240 / 1280.0)),
-                int(round(height * 530 / 720.0)),
-            )
-            if not self._tap_routine_fallback(
-                target,
-                ("healing_overview_fallback", *target),
-                "Лечение: показываю значки госпиталей",
-            ):
-                return False
-            self.routine_completed_steps.add("healing_overview")
-            settings["_overview_enabled"] = True
+            settings["_collection_pending"] = False
+            settings.pop("_pending_heal_count", None)
             self.save_config()
-            logger.info("Healing fallback opened the overview at (%s, %s)", *target)
+            logger.info("Stale healing collection state was cleared")
+
+        if not getattr(self, "routine_healing_search_started", False):
+            self.routine_healing_search_started = True
+            self.routine_last_action_time = time.time()
+            self.set_status_message(
+                "Лечение: ищу госпиталь или завершённую партию на карте убежища",
+                force=True,
+            )
+            logger.info(
+                "Healing camera search started with the collection marker active"
+            )
             return True
 
         route_key = self._healing_camera_route_key()
@@ -4279,37 +4288,45 @@ class AutoClicker:
             self.routine_healing_replay_index += 1
             route_label = "запомненный маршрут"
         else:
+            if (
+                saved_route
+                and not getattr(
+                    self,
+                    "routine_healing_saved_route_rejected",
+                    False,
+                )
+            ):
+                saved_routes.pop(route_key, None)
+                self.routine_healing_saved_route_rejected = True
+                self.save_config()
+                logger.info(
+                    "Healing camera route rejected after replay for %s",
+                    route_key,
+                )
+            # Reach one map corner, then cover the shelter in horizontal rows.
+            # The sequence is finite so a missing hospital cannot trap the bot.
             scan_pattern = (
-                "left", "left", "right", "right",
-                "up", "up",
-                "down", "down",
+                ("left",) * 5
+                + ("up",) * 4
+                + ("right",) * 9
+                + ("down",) * 2
+                + ("left",) * 9
+                + ("down",) * 2
+                + ("right",) * 9
+                + ("down",) * 2
+                + ("left",) * 9
             )
             scan_index = self.routine_healing_scan_index
-            if (
-                scan_index >= 4
-                and not self.routine_healing_overlay_recovery_done
-            ):
-                target = (
-                    int(round(width * 1240 / 1280.0)),
-                    int(round(height * 530 / 720.0)),
-                )
-                if not self._tap_routine_fallback(
-                    target,
-                    ("healing_overview_recovery", *target),
-                    "Лечение: восстанавливаю отображение значков госпиталей",
-                ):
-                    return False
-                self.routine_healing_overlay_recovery_done = True
-                self.routine_healing_scan_index = 0
-                self.routine_healing_pan_route = []
-                settings["_overview_enabled"] = not bool(
-                    settings.get("_overview_enabled", False)
-                )
-                self.save_config()
-                logger.info("Healing overview visibility recovered")
-                return True
             if scan_index >= len(scan_pattern):
-                return False
+                logger.warning(
+                    "Healing hospital was not found after %s camera moves",
+                    len(self.routine_healing_pan_route),
+                )
+                self._defer_current_routine_unavailable(
+                    "госпиталь не найден после полного обхода карты",
+                    time.time(),
+                )
+                return True
             direction = scan_pattern[scan_index]
             self.routine_healing_scan_index += 1
             route_label = "поиск"
@@ -4330,10 +4347,10 @@ class AutoClicker:
         to_y = int(round(to_y * height / 720.0))
         try:
             if self.uses_adb:
-                self.adb_client.swipe(from_x, from_y, to_x, to_y, 500)
+                self.adb_client.swipe(from_x, from_y, to_x, to_y, 400)
             else:
                 pyautogui.moveTo(from_x, from_y)
-                pyautogui.dragTo(to_x, to_y, duration=0.5, button="left")
+                pyautogui.dragTo(to_x, to_y, duration=0.4, button="left")
         except Exception:
             logger.exception("Healing camera movement failed")
             return False
@@ -4348,7 +4365,7 @@ class AutoClicker:
             f"Лечение: двигаю карту ({route_label}), ищу госпиталь",
             force=True,
         )
-        self._interruptible_sleep(1.0)
+        self._interruptible_sleep(0.6)
         logger.info(
             "Healing camera moved %s (%s, route step %s)",
             direction,
